@@ -15,12 +15,14 @@ public sealed record CursorChangedEventArgs(long Offset, long SelectionStart, lo
 /// <summary>
 /// Custom hardware-accelerated, virtualized Hex + ASCII Editor control for Avalonia UI.
 /// Renders only visible rows so multi-gigabyte files scroll at 60+ FPS with zero lag.
-/// Supports nibble-level hex editing, ASCII editing, selection highlighting, and .bt template color intervals.
+/// Supports Dark and Light themes, nibble-level hex editing, ASCII editing, selection highlighting,
+/// and .bt template color intervals.
 /// </summary>
 public sealed class HexEditorControl : Control
 {
     private BinaryDocument? _document;
     private IReadOnlyList<ByteColorInterval> _colorIntervals = Array.Empty<ByteColorInterval>();
+    private HexCraftThemePalette _theme = HexCraftThemePalette.Dark;
 
     private int _bytesPerRow = 16;
     private long _scrollRowOffset;
@@ -36,21 +38,6 @@ public sealed class HexEditorControl : Control
     private const double ColumnGap = 18.0;
 
     private static readonly Typeface MonoTypeface = new("Cascadia Mono, Consolas, JetBrains Mono, DejaVu Sans Mono, monospace");
-    private static readonly IBrush BgBrush = new SolidColorBrush(Color.Parse("#14171D"));
-    private static readonly IBrush HeaderBgBrush = new SolidColorBrush(Color.Parse("#1C2029"));
-    private static readonly IBrush GutterBgBrush = new SolidColorBrush(Color.Parse("#181B22"));
-    private static readonly IBrush GridLineBrush = new SolidColorBrush(Color.Parse("#282E3B"));
-    private static readonly IBrush AddressTextBrush = new SolidColorBrush(Color.Parse("#56B6C2"));
-    private static readonly IBrush HeaderTextBrush = new SolidColorBrush(Color.Parse("#7F848E"));
-    private static readonly IBrush ByteTextBrush = new SolidColorBrush(Color.Parse("#D7DAE0"));
-    private static readonly IBrush NullByteTextBrush = new SolidColorBrush(Color.Parse("#4B5263"));
-    private static readonly IBrush ModifiedByteTextBrush = new SolidColorBrush(Color.Parse("#E06C75"));
-    private static readonly IBrush AsciiTextBrush = new SolidColorBrush(Color.Parse("#98C379"));
-    private static readonly IBrush SelectionBrush = new SolidColorBrush(Color.Parse("#3D61AFEF"));
-    private static readonly IBrush CursorPrimaryBrush = new SolidColorBrush(Color.Parse("#E5C07B"));
-    private static readonly IBrush CursorSecondaryBrush = new SolidColorBrush(Color.Parse("#45E5C07B"));
-    private static readonly IPen CursorOutlinePen = new Pen(new SolidColorBrush(Color.Parse("#E5C07B")), 1.5);
-
     private readonly Dictionary<string, IBrush> _templateBrushCache = new(StringComparer.OrdinalIgnoreCase);
 
     public event EventHandler<CursorChangedEventArgs>? CursorChanged;
@@ -60,6 +47,17 @@ public sealed class HexEditorControl : Control
     {
         Focusable = true;
         ClipToBounds = true;
+    }
+
+    public HexCraftThemePalette Palette
+    {
+        get => _theme;
+        set
+        {
+            _theme = value ?? HexCraftThemePalette.Dark;
+            _templateBrushCache.Clear();
+            InvalidateVisual();
+        }
     }
 
     public BinaryDocument? Document
@@ -145,12 +143,26 @@ public sealed class HexEditorControl : Control
     {
         base.Render(context);
 
+        var bgBrush = HexCraftThemePalette.Brush(_theme.EditorBg);
+        var headerBgBrush = HexCraftThemePalette.Brush(_theme.EditorHeaderBg);
+        var gutterBgBrush = HexCraftThemePalette.Brush(_theme.EditorGutterBg);
+        var gridLineBrush = HexCraftThemePalette.Brush(_theme.EditorGridLine);
+        var addressTextBrush = HexCraftThemePalette.Brush(_theme.AddressText);
+        var headerTextBrush = HexCraftThemePalette.Brush(_theme.MutedText);
+        var byteTextBrush = HexCraftThemePalette.Brush(_theme.PrimaryText);
+        var nullByteTextBrush = HexCraftThemePalette.Brush(_theme.NullByteText);
+        var modifiedByteTextBrush = HexCraftThemePalette.Brush(_theme.ModifiedByteText);
+        var asciiTextBrush = HexCraftThemePalette.Brush(_theme.AsciiText);
+        var selectionBrush = HexCraftThemePalette.Brush(_theme.SelectionFill);
+        var cursorPrimaryBrush = HexCraftThemePalette.Brush(_theme.CursorFill);
+        var cursorOutlinePen = new Pen(cursorPrimaryBrush, 1.5);
+
         Rect bounds = Bounds;
-        context.FillRectangle(BgBrush, new Rect(0, 0, bounds.Width, bounds.Height));
+        context.FillRectangle(bgBrush, new Rect(0, 0, bounds.Width, bounds.Height));
 
         // Left address gutter & top column header backgrounds
-        context.FillRectangle(GutterBgBrush, new Rect(0, HeaderHeight, AddressColumnWidth, Math.Max(0, bounds.Height - HeaderHeight)));
-        context.FillRectangle(HeaderBgBrush, new Rect(0, 0, bounds.Width, HeaderHeight));
+        context.FillRectangle(gutterBgBrush, new Rect(0, HeaderHeight, AddressColumnWidth, Math.Max(0, bounds.Height - HeaderHeight)));
+        context.FillRectangle(headerBgBrush, new Rect(0, 0, bounds.Width, HeaderHeight));
 
         double hexStartX = AddressColumnWidth + ColumnGap;
         double hexByteStep = CharWidth * 3.0;
@@ -159,23 +171,23 @@ public sealed class HexEditorControl : Control
         double asciiStartX = hexStartX + hexWidth + ColumnGap;
 
         // Draw column headers
-        DrawText(context, "OFFSET (HEX)", 10, 6, HeaderTextBrush, 11.5, FontWeight.SemiBold);
+        DrawText(context, "OFFSET (HEX)", 10, 6, headerTextBrush, 11.5, FontWeight.SemiBold);
         for (int col = 0; col < _bytesPerRow; col++)
         {
             double x = GetHexColumnX(hexStartX, col, hexByteStep, midGroupGap);
-            DrawText(context, $"{col:X2}", x, 6, HeaderTextBrush, 11.5, FontWeight.SemiBold);
+            DrawText(context, $"{col:X2}", x, 6, headerTextBrush, 11.5, FontWeight.SemiBold);
         }
-        DrawText(context, "DECODED ASCII", asciiStartX, 6, HeaderTextBrush, 11.5, FontWeight.SemiBold);
+        DrawText(context, "DECODED ASCII", asciiStartX, 6, headerTextBrush, 11.5, FontWeight.SemiBold);
 
         // Separator lines
-        var sepPen = new Pen(GridLineBrush, 1);
+        var sepPen = new Pen(gridLineBrush, 1);
         context.DrawLine(sepPen, new Point(0, HeaderHeight), new Point(bounds.Width, HeaderHeight));
         context.DrawLine(sepPen, new Point(AddressColumnWidth, 0), new Point(AddressColumnWidth, bounds.Height));
         context.DrawLine(sepPen, new Point(asciiStartX - ColumnGap * 0.5, 0), new Point(asciiStartX - ColumnGap * 0.5, bounds.Height));
 
         if (_document is null || _document.Length == 0)
         {
-            DrawText(context, "Empty document — open a binary file or click 'Load Sample Firmware'.", hexStartX, HeaderHeight + 20, HeaderTextBrush, 13);
+            DrawText(context, "No binary loaded — click 'Open File...' or 'New Blank Buffer' in the toolbar above.", hexStartX, HeaderHeight + 24, headerTextBrush, 13);
             return;
         }
 
@@ -199,7 +211,7 @@ public sealed class HexEditorControl : Control
             int read = _document.ReadBytes(rowBaseOffset, rowBuf);
 
             // Draw row offset
-            DrawText(context, $"{rowBaseOffset:X8}", 10, y + 3, AddressTextBrush, 12.5);
+            DrawText(context, $"{rowBaseOffset:X8}", 10, y + 3, addressTextBrush, 12.5);
 
             for (int c = 0; c < read; c++)
             {
@@ -212,7 +224,7 @@ public sealed class HexEditorControl : Control
                 string? tplColor = FindTemplateColorForOffset(byteOffset);
                 if (!string.IsNullOrEmpty(tplColor))
                 {
-                    var tplBrush = GetTemplateOverlayBrush(tplColor);
+                    var tplBrush = GetTemplateOverlayBrush(tplColor, selectionBrush);
                     context.FillRectangle(tplBrush, new Rect(hx - 2, y + 1, CharWidth * 2 + 4, RowHeight - 2));
                     context.FillRectangle(tplBrush, new Rect(ax - 1, y + 1, CharWidth + 1, RowHeight - 2));
                 }
@@ -220,8 +232,8 @@ public sealed class HexEditorControl : Control
                 // 2. Selection highlight
                 if (byteOffset >= selStart && byteOffset <= selEnd)
                 {
-                    context.FillRectangle(SelectionBrush, new Rect(hx - 2, y + 1, CharWidth * 2 + 4, RowHeight - 2));
-                    context.FillRectangle(SelectionBrush, new Rect(ax - 1, y + 1, CharWidth + 1, RowHeight - 2));
+                    context.FillRectangle(selectionBrush, new Rect(hx - 2, y + 1, CharWidth * 2 + 4, RowHeight - 2));
+                    context.FillRectangle(selectionBrush, new Rect(ax - 1, y + 1, CharWidth + 1, RowHeight - 2));
                 }
 
                 // 3. Active cursor highlight
@@ -232,23 +244,26 @@ public sealed class HexEditorControl : Control
 
                     if (!_editingAsciiColumn)
                     {
-                        context.FillRectangle(CursorPrimaryBrush, hexCursorRect);
-                        context.DrawRectangle(CursorOutlinePen, asciiCursorRect);
+                        context.FillRectangle(cursorPrimaryBrush, hexCursorRect);
+                        context.DrawRectangle(cursorOutlinePen, asciiCursorRect);
                     }
                     else
                     {
-                        context.FillRectangle(CursorPrimaryBrush, asciiCursorRect);
-                        context.DrawRectangle(CursorOutlinePen, hexCursorRect);
+                        context.FillRectangle(cursorPrimaryBrush, asciiCursorRect);
+                        context.DrawRectangle(cursorOutlinePen, hexCursorRect);
                     }
                 }
 
                 // 4. Hex digits
                 bool isCursorPrimaryHex = byteOffset == _cursorOffset && !_editingAsciiColumn;
                 IBrush fgHex = isCursorPrimaryHex
-                    ? BgBrush
+                    ? Brushes.White
                     : _document.IsOffsetModified(byteOffset)
-                        ? ModifiedByteTextBrush
-                        : b == 0 ? NullByteTextBrush : ByteTextBrush;
+                        ? modifiedByteTextBrush
+                        : b == 0 ? nullByteTextBrush : byteTextBrush;
+
+                if (isCursorPrimaryHex && _theme.Kind == HexCraftThemeKind.Dark)
+                    fgHex = bgBrush;
 
                 DrawText(context, b.ToString("X2"), hx, y + 3, fgHex, 12.5,
                     isCursorPrimaryHex || _document.IsOffsetModified(byteOffset) ? FontWeight.Bold : FontWeight.Normal);
@@ -257,18 +272,24 @@ public sealed class HexEditorControl : Control
                 bool isCursorPrimaryAscii = byteOffset == _cursorOffset && _editingAsciiColumn;
                 char ch = b is >= 32 and < 127 ? (char)b : '.';
                 IBrush fgAscii = isCursorPrimaryAscii
-                    ? BgBrush
-                    : b is >= 32 and < 127 ? AsciiTextBrush : NullByteTextBrush;
+                    ? (_theme.Kind == HexCraftThemeKind.Dark ? bgBrush : Brushes.White)
+                    : b is >= 32 and < 127 ? asciiTextBrush : nullByteTextBrush;
 
                 DrawText(context, ch.ToString(), ax, y + 3, fgAscii, 12.5);
             }
         }
 
         // Draw scrollbar / minimap indicator on right edge
-        DrawScrollbar(context, bounds, totalRows, visibleRows);
+        DrawScrollbar(context, bounds, totalRows, visibleRows, gutterBgBrush, addressTextBrush);
     }
 
-    private void DrawScrollbar(DrawingContext context, Rect bounds, long totalRows, int visibleRows)
+    private void DrawScrollbar(
+        DrawingContext context,
+        Rect bounds,
+        long totalRows,
+        int visibleRows,
+        IBrush gutterBgBrush,
+        IBrush addressTextBrush)
     {
         if (totalRows <= 0 || _document is null || _document.Length == 0) return;
         double trackWidth = 14;
@@ -276,7 +297,7 @@ public sealed class HexEditorControl : Control
         double trackY = HeaderHeight + 2;
         double trackH = Math.Max(20, bounds.Height - HeaderHeight - 4);
 
-        context.FillRectangle(GutterBgBrush, new Rect(trackX, trackY, trackWidth, trackH));
+        context.FillRectangle(gutterBgBrush, new Rect(trackX, trackY, trackWidth, trackH));
 
         // Render template color intervals on minimap
         double docLen = Math.Max(1.0, _document.Length);
@@ -306,9 +327,9 @@ public sealed class HexEditorControl : Control
         double posRatio = totalRows > 1 ? (double)_scrollRowOffset / (totalRows - 1) : 0;
         double thumbY = trackY + (trackH - thumbH) * Math.Clamp(posRatio, 0, 1);
 
-        context.FillRectangle(new SolidColorBrush(Color.FromArgb(120, 86, 182, 194)),
+        context.FillRectangle(new SolidColorBrush(Color.FromArgb(100, 86, 182, 194)),
             new Rect(trackX + 1, thumbY, trackWidth - 2, thumbH), 3);
-        context.DrawRectangle(new Pen(AddressTextBrush, 1),
+        context.DrawRectangle(new Pen(addressTextBrush, 1),
             new Rect(trackX + 1, thumbY, trackWidth - 2, thumbH), 3);
     }
 
@@ -589,19 +610,20 @@ public sealed class HexEditorControl : Control
         return null;
     }
 
-    private IBrush GetTemplateOverlayBrush(string hexColor)
+    private IBrush GetTemplateOverlayBrush(string hexColor, IBrush fallback)
     {
         if (_templateBrushCache.TryGetValue(hexColor, out var cached))
             return cached;
 
         if (Color.TryParse(hexColor, out Color c))
         {
-            var semi = new SolidColorBrush(Color.FromArgb(72, c.R, c.G, c.B));
+            byte alpha = _theme.Kind == HexCraftThemeKind.Dark ? (byte)72 : (byte)58;
+            var semi = new SolidColorBrush(Color.FromArgb(alpha, c.R, c.G, c.B));
             _templateBrushCache[hexColor] = semi;
             return semi;
         }
 
-        return SelectionBrush;
+        return fallback;
     }
 
     private static double GetHexColumnX(double startX, int col, double step, double midGap)
@@ -658,4 +680,3 @@ public sealed class HexEditorControl : Control
         CursorChanged?.Invoke(this, new CursorChangedEventArgs(_cursorOffset, selStart, selLen));
     }
 }
-

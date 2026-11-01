@@ -11,6 +11,7 @@ using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
+using Avalonia.Styling;
 using HexCraft.App.Controls;
 using HexCraft.Core.Analysis;
 using HexCraft.Core.Buffers;
@@ -22,10 +23,10 @@ namespace HexCraft.App;
 
 /// <summary>
 /// Main multi-window workspace for HexCraft on Windows 11 & Linux.
-/// Hosts:
+/// Supports Dark and Light themes and hosts:
 ///   a) Multi-Tab Primary Hex + ASCII Editor (Center)
 ///   b) Data Inspector, Selection Byte Transforms & Copy-As-Code (Right Top)
-///   c) File Information, Magic Identification, Hashes & Block Entropy Chart (Right Bottom)
+///   c) File Information, Magic Identification, Exif Metadata, Hashes & Block Entropy Chart (Right Bottom)
 ///   d) 010 Editor Binary Template (.bt) Results Tree & Live Script Editor (Bottom Tab 1)
 ///   e) Strings Viewer with Regex/Search filter (Bottom Tab 2)
 ///   f) Binwalk & unsquashfs Firmware Analyzer + Built-in GZip/ZIP Unpacker (Bottom Tab 3)
@@ -36,6 +37,9 @@ public sealed class MainWindow : Window
     private readonly List<BinaryDocument> _openDocuments = new();
     private int _activeDocIndex;
     private BinaryDocument _document => _openDocuments[_activeDocIndex];
+
+    private HexCraftThemePalette _theme = HexCraftThemePalette.Dark;
+    private readonly ComboBox _themeSelectorCombo;
 
     private readonly StackPanel _documentTabsStrip;
     private readonly HexEditorControl _hexEditor;
@@ -84,6 +88,16 @@ public sealed class MainWindow : Window
     private readonly TextBox _searchBox;
     private readonly ComboBox _searchModeCombo;
 
+    // Themeable structural containers
+    private Border? _topToolbarBorder;
+    private Border? _docTabBarBorder;
+    private TabControl? _bottomDockTabControl;
+    private Border? _statusBarBorder;
+    private readonly List<(Border Outer, Border Header, TextBlock Title)> _titledPanes = new();
+    private readonly List<GridSplitter> _splitters = new();
+    private readonly List<TextBlock> _toolbarLabels = new();
+    private readonly List<(Button Button, string AccentRole)> _themedButtons = new();
+
     private static readonly (string Label, string Hex)[] BookmarkColors =
     {
         ("Gold (#E5C07B)", "#E5C07B"),
@@ -96,12 +110,12 @@ public sealed class MainWindow : Window
 
     public MainWindow()
     {
-        Title = "HexCraft — Cross-Platform Reverse Engineering Hex Editor (.NET 9 / Avalonia)";
+        Title = "HexCraft v1.0 — Cross-Platform Reverse Engineering Hex Editor";
         Width = 1520;
         Height = 940;
         MinWidth = 1060;
         MinHeight = 700;
-        Background = new SolidColorBrush(Color.Parse("#111318"));
+        Background = HexCraftThemePalette.Brush(_theme.WindowBg);
         TransparencyLevelHint = new[]
         {
             WindowTransparencyLevel.Mica,
@@ -111,12 +125,17 @@ public sealed class MainWindow : Window
 
         _templates = TemplateRepository.GetAvailableTemplates();
 
-        var initialDoc = new BinaryDocument(SampleBinaryFactory.CreateDemoFirmwareBlob(), "demo_firmware_gl_mt6000.bin");
-        initialDoc.Bookmarks.Add(new Bookmark(0x00, 8, "PNG Signature", "#C678DD", "8-byte PNG Magic"));
-        initialDoc.Bookmarks.Add(new Bookmark(0x1E0, 96, "SquashFS v4.0 Superblock", "#98C379", "Embedded rootfs partition"));
-        initialDoc.Bookmarks.Add(new Bookmark(0x260, 120, "GZip Initramfs Payload", "#E5C07B", "Compressed boot script"));
+        // Start with a clean 256-byte blank buffer ready for editing or opening any file
+        var initialDoc = new BinaryDocument(new byte[256], "Untitled.bin");
         _openDocuments.Add(initialDoc);
         _activeDocIndex = 0;
+
+        _themeSelectorCombo = new ComboBox
+        {
+            Width = 115,
+            ItemsSource = new[] { "Dark Theme", "Light Theme" },
+            SelectedIndex = 0
+        };
 
         _documentTabsStrip = new StackPanel
         {
@@ -125,7 +144,11 @@ public sealed class MainWindow : Window
             Margin = new Thickness(4, 2)
         };
 
-        _hexEditor = new HexEditorControl { Document = _document };
+        _hexEditor = new HexEditorControl
+        {
+            Document = _document,
+            Palette = _theme
+        };
 
         _statusOffsetLabel = CreateStatusText("Offset: 0x00000000 (0)");
         _statusSelectionLabel = CreateStatusText("Selection: 1 B");
@@ -135,7 +158,6 @@ public sealed class MainWindow : Window
         _bigEndianCheck = new CheckBox
         {
             Content = "Big Endian",
-            Foreground = Brushes.LightGray,
             Margin = new Thickness(4, 0)
         };
         _bigEndianCheck.IsCheckedChanged += (_, _) => RefreshDataInspector(_hexEditor.CursorOffset);
@@ -155,58 +177,35 @@ public sealed class MainWindow : Window
             AcceptsTab = true,
             FontFamily = new FontFamily("Cascadia Mono, Consolas, monospace"),
             FontSize = 12,
-            Background = new SolidColorBrush(Color.Parse("#14171D")),
-            Foreground = new SolidColorBrush(Color.Parse("#D7DAE0")),
             TextWrapping = TextWrapping.NoWrap
         };
-        _templateTree = new TreeView
-        {
-            Background = new SolidColorBrush(Color.Parse("#14171D")),
-            Foreground = new SolidColorBrush(Color.Parse("#D7DAE0"))
-        };
+        _templateTree = new TreeView();
         _templateConsoleBox = new TextBox
         {
             IsReadOnly = true,
             AcceptsReturn = true,
             FontFamily = new FontFamily("Cascadia Mono, Consolas, monospace"),
-            FontSize = 11.5,
-            Background = new SolidColorBrush(Color.Parse("#101217")),
-            Foreground = new SolidColorBrush(Color.Parse("#98C379"))
+            FontSize = 11.5
         };
 
         _stringsSearchBox = new TextBox { Width = 220, Watermark = "Filter strings or regex..." };
-        _stringsRegexCheck = new CheckBox { Content = "Regex", Foreground = Brushes.LightGray };
+        _stringsRegexCheck = new CheckBox { Content = "Regex" };
         _stringsMinLenInput = new NumericUpDown { Minimum = 2, Maximum = 64, Value = 4, Width = 110 };
-        _stringsListBox = new ListBox
-        {
-            Background = new SolidColorBrush(Color.Parse("#14171D")),
-            Foreground = new SolidColorBrush(Color.Parse("#D7DAE0"))
-        };
+        _stringsListBox = new ListBox();
         _stringsCountLabel = new TextBlock
         {
-            Foreground = new SolidColorBrush(Color.Parse("#98C379")),
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(8, 0)
         };
 
-        _binwalkListBox = new ListBox
-        {
-            Background = new SolidColorBrush(Color.Parse("#14171D")),
-            Foreground = new SolidColorBrush(Color.Parse("#D7DAE0"))
-        };
-        _extractedFilesListBox = new ListBox
-        {
-            Background = new SolidColorBrush(Color.Parse("#14171D")),
-            Foreground = new SolidColorBrush(Color.Parse("#D7DAE0"))
-        };
+        _binwalkListBox = new ListBox();
+        _extractedFilesListBox = new ListBox();
         _toolLogBox = new TextBox
         {
             IsReadOnly = true,
             AcceptsReturn = true,
             FontFamily = new FontFamily("Cascadia Mono, Consolas, monospace"),
-            FontSize = 11.5,
-            Background = new SolidColorBrush(Color.Parse("#101217")),
-            Foreground = new SolidColorBrush(Color.Parse("#E5C07B"))
+            FontSize = 11.5
         };
 
         _bookmarkNameBox = new TextBox { Width = 180, Watermark = "Bookmark label..." };
@@ -216,11 +215,7 @@ public sealed class MainWindow : Window
             ItemsSource = BookmarkColors.Select(c => c.Label).ToList(),
             SelectedIndex = 0
         };
-        _bookmarksListBox = new ListBox
-        {
-            Background = new SolidColorBrush(Color.Parse("#14171D")),
-            Foreground = new SolidColorBrush(Color.Parse("#D7DAE0"))
-        };
+        _bookmarksListBox = new ListBox();
 
         _xorKeyBox = new TextBox { Width = 75, Text = "0xFF", Watermark = "0xFF" };
         _copyFormatCombo = new ComboBox
@@ -248,8 +243,112 @@ public sealed class MainWindow : Window
 
         Content = BuildWorkspaceLayout();
         WireEvents();
+        ApplyTheme(HexCraftThemePalette.Dark);
+    }
+
+    public void ApplyTheme(HexCraftThemePalette palette)
+    {
+        _theme = palette;
+        if (Application.Current is not null)
+        {
+            Application.Current.RequestedThemeVariant =
+                palette.Kind == HexCraftThemeKind.Dark ? ThemeVariant.Dark : ThemeVariant.Light;
+        }
+
+        Background = HexCraftThemePalette.Brush(_theme.WindowBg);
+        _hexEditor.Palette = _theme;
+
+        if (_topToolbarBorder is not null)
+        {
+            _topToolbarBorder.Background = HexCraftThemePalette.Brush(_theme.ToolbarBg);
+            _topToolbarBorder.BorderBrush = HexCraftThemePalette.Brush(_theme.ToolbarBorder);
+        }
+
+        if (_docTabBarBorder is not null)
+        {
+            _docTabBarBorder.Background = HexCraftThemePalette.Brush(_theme.PaneBg);
+            _docTabBarBorder.BorderBrush = HexCraftThemePalette.Brush(_theme.PaneBorder);
+        }
+
+        if (_bottomDockTabControl is not null)
+        {
+            _bottomDockTabControl.Background = HexCraftThemePalette.Brush(_theme.PaneBg);
+        }
+
+        if (_statusBarBorder is not null)
+        {
+            _statusBarBorder.Background = HexCraftThemePalette.Brush(_theme.PaneBg);
+            _statusBarBorder.BorderBrush = HexCraftThemePalette.Brush(_theme.PaneBorder);
+        }
+
+        foreach (var (outer, header, title) in _titledPanes)
+        {
+            outer.Background = HexCraftThemePalette.Brush(_theme.PaneBg);
+            outer.BorderBrush = HexCraftThemePalette.Brush(_theme.PaneBorder);
+            header.Background = HexCraftThemePalette.Brush(_theme.PaneHeaderBg);
+            title.Foreground = HexCraftThemePalette.Brush(_theme.SecondaryText);
+        }
+
+        foreach (var splitter in _splitters)
+        {
+            splitter.Background = HexCraftThemePalette.Brush(_theme.PaneBorder);
+        }
+
+        foreach (var lbl in _toolbarLabels)
+        {
+            lbl.Foreground = HexCraftThemePalette.Brush(_theme.SecondaryText);
+        }
+
+        foreach (var (btn, role) in _themedButtons)
+        {
+            string accent = ResolveAccentHex(role);
+            btn.Background = HexCraftThemePalette.Brush(_theme.ButtonBg);
+            btn.Foreground = HexCraftThemePalette.Brush(accent);
+            btn.BorderBrush = HexCraftThemePalette.Brush(accent);
+        }
+
+        _templateEditorBox.Background = HexCraftThemePalette.Brush(_theme.EditorBg);
+        _templateEditorBox.Foreground = HexCraftThemePalette.Brush(_theme.PrimaryText);
+        _templateTree.Background = HexCraftThemePalette.Brush(_theme.EditorBg);
+        _templateTree.Foreground = HexCraftThemePalette.Brush(_theme.PrimaryText);
+        _templateConsoleBox.Background = HexCraftThemePalette.Brush(_theme.ConsoleBg);
+        _templateConsoleBox.Foreground = HexCraftThemePalette.Brush(_theme.AccentGreen);
+
+        _stringsListBox.Background = HexCraftThemePalette.Brush(_theme.EditorBg);
+        _stringsListBox.Foreground = HexCraftThemePalette.Brush(_theme.PrimaryText);
+        _stringsCountLabel.Foreground = HexCraftThemePalette.Brush(_theme.AccentGreen);
+
+        _binwalkListBox.Background = HexCraftThemePalette.Brush(_theme.EditorBg);
+        _binwalkListBox.Foreground = HexCraftThemePalette.Brush(_theme.PrimaryText);
+        _extractedFilesListBox.Background = HexCraftThemePalette.Brush(_theme.EditorBg);
+        _extractedFilesListBox.Foreground = HexCraftThemePalette.Brush(_theme.PrimaryText);
+        _toolLogBox.Background = HexCraftThemePalette.Brush(_theme.ConsoleBg);
+        _toolLogBox.Foreground = HexCraftThemePalette.Brush(_theme.AccentGold);
+
+        _bookmarksListBox.Background = HexCraftThemePalette.Brush(_theme.EditorBg);
+        _bookmarksListBox.Foreground = HexCraftThemePalette.Brush(_theme.PrimaryText);
+
+        _statusOffsetLabel.Foreground = HexCraftThemePalette.Brush(_theme.SecondaryText);
+        _statusSelectionLabel.Foreground = HexCraftThemePalette.Brush(_theme.SecondaryText);
+        _statusSizeLabel.Foreground = HexCraftThemePalette.Brush(_theme.SecondaryText);
+        _statusToolSummaryLabel.Foreground = HexCraftThemePalette.Brush(_theme.SecondaryText);
+
         RefreshDocumentTabsStrip();
         RefreshAllPanesForCurrentDocument();
+    }
+
+    private string ResolveAccentHex(string role)
+    {
+        return role switch
+        {
+            "blue" => _theme.AccentBlue,
+            "cyan" => _theme.AccentCyan,
+            "green" => _theme.AccentGreen,
+            "gold" => _theme.AccentGold,
+            "purple" => _theme.AccentPurple,
+            "red" => _theme.AccentRed,
+            _ => _theme.SecondaryText
+        };
     }
 
     private Control BuildWorkspaceLayout()
@@ -276,17 +375,15 @@ public sealed class MainWindow : Window
             RowDefinitions = new RowDefinitions("Auto,*,5,315")
         };
 
-        var docTabBarBorder = new Border
+        _docTabBarBorder = new Border
         {
-            Background = new SolidColorBrush(Color.Parse("#181B22")),
-            BorderBrush = new SolidColorBrush(Color.Parse("#282E3B")),
             BorderThickness = new Thickness(1, 1, 1, 0),
             CornerRadius = new CornerRadius(5, 5, 0, 0),
             Padding = new Thickness(4, 2),
             Child = _documentTabsStrip
         };
-        Grid.SetRow(docTabBarBorder, 0);
-        centerVerticalGrid.Children.Add(docTabBarBorder);
+        Grid.SetRow(_docTabBarBorder, 0);
+        centerVerticalGrid.Children.Add(_docTabBarBorder);
 
         var hexPanel = CreateTitledPane(
             "PRIMARY VIEW — HEX / ASCII EDITOR (Type Hex or Tab to edit ASCII | Drag to Select | Right Edge: Color/Bookmark Minimap)",
@@ -294,11 +391,7 @@ public sealed class MainWindow : Window
         Grid.SetRow(hexPanel, 1);
         centerVerticalGrid.Children.Add(hexPanel);
 
-        var vSplitter = new GridSplitter
-        {
-            Background = new SolidColorBrush(Color.Parse("#282E3B")),
-            ResizeDirection = GridResizeDirection.Rows
-        };
+        var vSplitter = CreateSplitter(GridResizeDirection.Rows);
         Grid.SetRow(vSplitter, 2);
         centerVerticalGrid.Children.Add(vSplitter);
 
@@ -309,11 +402,7 @@ public sealed class MainWindow : Window
         Grid.SetColumn(centerVerticalGrid, 0);
         mainHorizontalGrid.Children.Add(centerVerticalGrid);
 
-        var hSplitter = new GridSplitter
-        {
-            Background = new SolidColorBrush(Color.Parse("#282E3B")),
-            ResizeDirection = GridResizeDirection.Columns
-        };
+        var hSplitter = CreateSplitter(GridResizeDirection.Columns);
         Grid.SetColumn(hSplitter, 1);
         mainHorizontalGrid.Children.Add(hSplitter);
 
@@ -334,49 +423,38 @@ public sealed class MainWindow : Window
 
     private Control BuildTopToolbar()
     {
-        var bar = new Border
+        _topToolbarBorder = new Border
         {
-            Background = new SolidColorBrush(Color.Parse("#1B1F27")),
-            BorderBrush = new SolidColorBrush(Color.Parse("#2C323F")),
             BorderThickness = new Thickness(0, 0, 0, 1),
             Padding = new Thickness(8, 6)
         };
 
         var outerStack = new StackPanel { Spacing = 5 };
 
-        // Row 1: File, Undo/Redo, GoTo, Find
+        // Row 1: File, Undo/Redo, GoTo, Find, Theme Switcher
         var row1 = new WrapPanel
         {
             Orientation = Orientation.Horizontal,
             VerticalAlignment = VerticalAlignment.Center
         };
 
-        row1.Children.Add(CreateActionButton("Open File...", "#61AFEF", OnOpenFileClicked));
-        row1.Children.Add(CreateActionButton("Save", "#98C379", OnSaveFileClicked));
-        row1.Children.Add(CreateActionButton("New Sample Firmware Tab", "#C678DD", (_, _) => AddNewDemoTab()));
-        row1.Children.Add(CreateActionButton("Undo", "#ABB2BF", (_, _) => { _document.Undo(); OnDocumentEdited(); }));
-        row1.Children.Add(CreateActionButton("Redo", "#ABB2BF", (_, _) => { _document.Redo(); OnDocumentEdited(); }));
+        row1.Children.Add(CreateActionButton("Open File...", "blue", OnOpenFileClicked));
+        row1.Children.Add(CreateActionButton("Save", "green", OnSaveFileClicked));
+        row1.Children.Add(CreateActionButton("New Blank Buffer", "purple", (_, _) => AddNewBlankTab()));
+        row1.Children.Add(CreateActionButton("Undo", "neutral", (_, _) => { _document.Undo(); OnDocumentEdited(); }));
+        row1.Children.Add(CreateActionButton("Redo", "neutral", (_, _) => { _document.Redo(); OnDocumentEdited(); }));
 
-        row1.Children.Add(new TextBlock
-        {
-            Text = "Offset:",
-            Foreground = Brushes.LightGray,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(12, 0, 4, 0)
-        });
+        row1.Children.Add(CreateToolbarLabel("Offset:", new Thickness(12, 0, 4, 0)));
         row1.Children.Add(_gotoOffsetBox);
-        row1.Children.Add(CreateActionButton("Go", "#56B6C2", (_, _) => ExecuteGotoOffset()));
+        row1.Children.Add(CreateActionButton("Go", "cyan", (_, _) => ExecuteGotoOffset()));
 
-        row1.Children.Add(new TextBlock
-        {
-            Text = "Find:",
-            Foreground = Brushes.LightGray,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(12, 0, 4, 0)
-        });
+        row1.Children.Add(CreateToolbarLabel("Find:", new Thickness(12, 0, 4, 0)));
         row1.Children.Add(_searchModeCombo);
         row1.Children.Add(_searchBox);
-        row1.Children.Add(CreateActionButton("Find Next", "#E5C07B", (_, _) => ExecuteFindNext()));
+        row1.Children.Add(CreateActionButton("Find Next", "gold", (_, _) => ExecuteFindNext()));
+
+        row1.Children.Add(CreateToolbarLabel("Theme:", new Thickness(14, 0, 4, 0)));
+        row1.Children.Add(_themeSelectorCombo);
 
         // Row 2: Selection Byte Operations & Copy-As-Code
         var row2 = new WrapPanel
@@ -385,44 +463,27 @@ public sealed class MainWindow : Window
             VerticalAlignment = VerticalAlignment.Center
         };
 
-        row2.Children.Add(new TextBlock
-        {
-            Text = "Selection Ops:",
-            Foreground = new SolidColorBrush(Color.Parse("#E5C07B")),
-            FontWeight = FontWeight.SemiBold,
-            FontSize = 11.5,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(2, 0, 6, 0)
-        });
+        row2.Children.Add(CreateToolbarLabel("Selection Ops:", new Thickness(2, 0, 6, 0), bold: true));
         row2.Children.Add(_xorKeyBox);
-        row2.Children.Add(CreateActionButton("XOR Selection", "#E5C07B", (_, _) => ExecuteXorSelection()));
-        row2.Children.Add(CreateActionButton("Invert (~NOT)", "#56B6C2", (_, _) => ExecuteInvertSelection()));
-        row2.Children.Add(CreateActionButton("Zero-Fill (0x00)", "#E06C75", (_, _) => ExecuteFillSelection(0x00)));
-        row2.Children.Add(CreateActionButton("Reverse Bytes", "#C678DD", (_, _) => ExecuteReverseSelection()));
+        row2.Children.Add(CreateActionButton("XOR Selection", "gold", (_, _) => ExecuteXorSelection()));
+        row2.Children.Add(CreateActionButton("Invert (~NOT)", "cyan", (_, _) => ExecuteInvertSelection()));
+        row2.Children.Add(CreateActionButton("Zero-Fill (0x00)", "red", (_, _) => ExecuteFillSelection(0x00)));
+        row2.Children.Add(CreateActionButton("Reverse Bytes", "purple", (_, _) => ExecuteReverseSelection()));
 
-        row2.Children.Add(new TextBlock
-        {
-            Text = "Copy Selection As:",
-            Foreground = new SolidColorBrush(Color.Parse("#98C379")),
-            FontWeight = FontWeight.SemiBold,
-            FontSize = 11.5,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(14, 0, 6, 0)
-        });
+        row2.Children.Add(CreateToolbarLabel("Copy Selection As:", new Thickness(14, 0, 6, 0), bold: true));
         row2.Children.Add(_copyFormatCombo);
-        row2.Children.Add(CreateActionButton("Copy to Clipboard", "#98C379", OnCopySelectionAsCodeClicked));
+        row2.Children.Add(CreateActionButton("Copy to Clipboard", "green", OnCopySelectionAsCodeClicked));
 
         outerStack.Children.Add(row1);
         outerStack.Children.Add(row2);
-        bar.Child = outerStack;
-        return bar;
+        _topToolbarBorder.Child = outerStack;
+        return _topToolbarBorder;
     }
 
     private Control BuildBottomDockedWindows()
     {
-        var tabControl = new TabControl
+        _bottomDockTabControl = new TabControl
         {
-            Background = new SolidColorBrush(Color.Parse("#181B22")),
             Padding = new Thickness(4)
         };
 
@@ -439,16 +500,11 @@ public sealed class MainWindow : Window
             Spacing = 6,
             Margin = new Thickness(4, 4)
         };
-        tplHeaderBar.Children.Add(new TextBlock
-        {
-            Text = "Template:",
-            Foreground = Brushes.LightGray,
-            VerticalAlignment = VerticalAlignment.Center
-        });
+        tplHeaderBar.Children.Add(CreateToolbarLabel("Template:", new Thickness(0)));
         tplHeaderBar.Children.Add(_templateCombo);
-        tplHeaderBar.Children.Add(CreateActionButton("Run Template (.bt)", "#98C379", (_, _) => RunActiveTemplate()));
-        tplHeaderBar.Children.Add(CreateActionButton("Load .bt File...", "#61AFEF", OnLoadBtFileClicked));
-        tplHeaderBar.Children.Add(CreateActionButton("Clear Overlay", "#E06C75", (_, _) =>
+        tplHeaderBar.Children.Add(CreateActionButton("Run Template (.bt)", "green", (_, _) => RunActiveTemplate()));
+        tplHeaderBar.Children.Add(CreateActionButton("Load .bt File...", "blue", OnLoadBtFileClicked));
+        tplHeaderBar.Children.Add(CreateActionButton("Clear Overlay", "red", (_, _) =>
         {
             _hexEditor.ColorIntervals = Array.Empty<ByteColorInterval>();
         }));
@@ -461,11 +517,7 @@ public sealed class MainWindow : Window
         Grid.SetColumn(resultsPane, 0);
         templateGrid.Children.Add(resultsPane);
 
-        var tplSplitter = new GridSplitter
-        {
-            Background = new SolidColorBrush(Color.Parse("#282E3B")),
-            ResizeDirection = GridResizeDirection.Columns
-        };
+        var tplSplitter = CreateSplitter(GridResizeDirection.Columns);
         Grid.SetColumn(tplSplitter, 1);
         templateGrid.Children.Add(tplSplitter);
 
@@ -489,22 +541,12 @@ public sealed class MainWindow : Window
             Spacing = 8,
             Margin = new Thickness(4, 4)
         };
-        stringsToolbar.Children.Add(new TextBlock
-        {
-            Text = "Filter:",
-            Foreground = Brushes.LightGray,
-            VerticalAlignment = VerticalAlignment.Center
-        });
+        stringsToolbar.Children.Add(CreateToolbarLabel("Filter:", new Thickness(0)));
         stringsToolbar.Children.Add(_stringsSearchBox);
         stringsToolbar.Children.Add(_stringsRegexCheck);
-        stringsToolbar.Children.Add(new TextBlock
-        {
-            Text = "Min Len:",
-            Foreground = Brushes.LightGray,
-            VerticalAlignment = VerticalAlignment.Center
-        });
+        stringsToolbar.Children.Add(CreateToolbarLabel("Min Len:", new Thickness(0)));
         stringsToolbar.Children.Add(_stringsMinLenInput);
-        stringsToolbar.Children.Add(CreateActionButton("Rescan Strings", "#61AFEF", (_, _) => RefreshStringsPane()));
+        stringsToolbar.Children.Add(CreateActionButton("Rescan Strings", "blue", (_, _) => RefreshStringsPane()));
         stringsToolbar.Children.Add(_stringsCountLabel);
 
         Grid.SetRow(stringsToolbar, 0);
@@ -525,9 +567,9 @@ public sealed class MainWindow : Window
             Spacing = 6,
             Margin = new Thickness(4, 4)
         };
-        bwToolbar.Children.Add(CreateActionButton("Run Signature Scan (Binwalk)", "#61AFEF", (_, _) => RefreshBinwalkScan(tryExternal: true)));
-        bwToolbar.Children.Add(CreateActionButton("Carve / Unpack Selected (unsquashfs / GZip / ZIP)", "#98C379", OnCarveOrUnsquashClicked));
-        bwToolbar.Children.Add(CreateActionButton("Open Extracted File in New Tab", "#C678DD", OnOpenExtractedFileClicked));
+        bwToolbar.Children.Add(CreateActionButton("Run Signature Scan (Binwalk)", "blue", (_, _) => RefreshBinwalkScan(tryExternal: true)));
+        bwToolbar.Children.Add(CreateActionButton("Carve / Unpack Selected (unsquashfs / GZip / ZIP)", "green", OnCarveOrUnsquashClicked));
+        bwToolbar.Children.Add(CreateActionButton("Open Extracted File in New Tab", "purple", OnOpenExtractedFileClicked));
 
         Grid.SetRow(bwToolbar, 0);
         leftScanGrid.Children.Add(bwToolbar);
@@ -537,22 +579,14 @@ public sealed class MainWindow : Window
         Grid.SetColumn(leftScanGrid, 0);
         binwalkGrid.Children.Add(leftScanGrid);
 
-        var bwSplitter = new GridSplitter
-        {
-            Background = new SolidColorBrush(Color.Parse("#282E3B")),
-            ResizeDirection = GridResizeDirection.Columns
-        };
+        var bwSplitter = CreateSplitter(GridResizeDirection.Columns);
         Grid.SetColumn(bwSplitter, 1);
         binwalkGrid.Children.Add(bwSplitter);
 
         var rightExtractGrid = new Grid { RowDefinitions = new RowDefinitions("Auto,*,85") };
-        rightExtractGrid.Children.Add(new TextBlock
-        {
-            Text = "Extracted / Decompressed Files (Double-click to open in new HexCraft tab):",
-            Foreground = new SolidColorBrush(Color.Parse("#ABB2BF")),
-            FontSize = 11.5,
-            Margin = new Thickness(4, 4)
-        });
+        rightExtractGrid.Children.Add(CreateToolbarLabel(
+            "Extracted / Decompressed Files (Double-click to open in new HexCraft tab):",
+            new Thickness(4, 4)));
         Grid.SetRow(_extractedFilesListBox, 1);
         rightExtractGrid.Children.Add(_extractedFilesListBox);
         Grid.SetRow(_toolLogBox, 2);
@@ -569,23 +603,18 @@ public sealed class MainWindow : Window
             Spacing = 8,
             Margin = new Thickness(4, 4)
         };
-        bmToolbar.Children.Add(new TextBlock
-        {
-            Text = "Bookmark Label:",
-            Foreground = Brushes.LightGray,
-            VerticalAlignment = VerticalAlignment.Center
-        });
+        bmToolbar.Children.Add(CreateToolbarLabel("Bookmark Label:", new Thickness(0)));
         bmToolbar.Children.Add(_bookmarkNameBox);
         bmToolbar.Children.Add(_bookmarkColorCombo);
-        bmToolbar.Children.Add(CreateActionButton("Bookmark Current Selection", "#98C379", (_, _) => AddBookmarkFromSelection()));
-        bmToolbar.Children.Add(CreateActionButton("Remove Selected Bookmark", "#E06C75", (_, _) => RemoveSelectedBookmark()));
+        bmToolbar.Children.Add(CreateActionButton("Bookmark Current Selection", "green", (_, _) => AddBookmarkFromSelection()));
+        bmToolbar.Children.Add(CreateActionButton("Remove Selected Bookmark", "red", (_, _) => RemoveSelectedBookmark()));
 
         Grid.SetRow(bmToolbar, 0);
         bookmarksGrid.Children.Add(bmToolbar);
         Grid.SetRow(_bookmarksListBox, 1);
         bookmarksGrid.Children.Add(_bookmarksListBox);
 
-        tabControl.ItemsSource = new[]
+        _bottomDockTabControl.ItemsSource = new[]
         {
             new TabItem
             {
@@ -609,7 +638,7 @@ public sealed class MainWindow : Window
             }
         };
 
-        return tabControl;
+        return _bottomDockTabControl;
     }
 
     private Control BuildRightSideDockedWindows()
@@ -639,21 +668,17 @@ public sealed class MainWindow : Window
         Grid.SetRow(inspectorPane, 0);
         rightGrid.Children.Add(inspectorPane);
 
-        var rSplitter = new GridSplitter
-        {
-            Background = new SolidColorBrush(Color.Parse("#282E3B")),
-            ResizeDirection = GridResizeDirection.Rows
-        };
+        var rSplitter = CreateSplitter(GridResizeDirection.Rows);
         Grid.SetRow(rSplitter, 1);
         rightGrid.Children.Add(rSplitter);
 
-        // Bottom Pane: File Information, Identification, Hashes & Entropy
+        // Bottom Pane: File Information, Identification, Exif, Hashes & Entropy
         var metaScroll = new ScrollViewer
         {
             Content = _fileMetadataPanel,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto
         };
-        var metaPane = CreateTitledPane("FILE INFORMATION, MAGIC ID & ENTROPY", metaScroll);
+        var metaPane = CreateTitledPane("FILE INFORMATION, MAGIC ID, EXIF & ENTROPY", metaScroll);
         Grid.SetRow(metaPane, 2);
         rightGrid.Children.Add(metaPane);
 
@@ -662,10 +687,8 @@ public sealed class MainWindow : Window
 
     private Control BuildStatusBar()
     {
-        var border = new Border
+        _statusBarBorder = new Border
         {
-            Background = new SolidColorBrush(Color.Parse("#181B22")),
-            BorderBrush = new SolidColorBrush(Color.Parse("#282E3B")),
             BorderThickness = new Thickness(0, 1, 0, 0),
             Padding = new Thickness(10, 4)
         };
@@ -680,12 +703,20 @@ public sealed class MainWindow : Window
         stack.Children.Add(_statusSizeLabel);
         stack.Children.Add(_statusToolSummaryLabel);
 
-        border.Child = stack;
-        return border;
+        _statusBarBorder.Child = stack;
+        return _statusBarBorder;
     }
 
     private void WireEvents()
     {
+        _themeSelectorCombo.SelectionChanged += (_, _) =>
+        {
+            var chosen = _themeSelectorCombo.SelectedIndex == 1
+                ? HexCraftThemePalette.Light
+                : HexCraftThemePalette.Dark;
+            ApplyTheme(chosen);
+        };
+
         _hexEditor.CursorChanged += (_, e) =>
         {
             _statusOffsetLabel.Text = $"Offset: 0x{e.Offset:X8} ({e.Offset:N0})";
@@ -755,9 +786,9 @@ public sealed class MainWindow : Window
             var tabBtn = new Button
             {
                 Content = label,
-                Background = new SolidColorBrush(Color.Parse(isActive ? "#2B3240" : "#1B1F27")),
-                Foreground = new SolidColorBrush(Color.Parse(isActive ? "#61AFEF" : "#ABB2BF")),
-                BorderBrush = new SolidColorBrush(Color.Parse(isActive ? "#61AFEF" : "#2C323F")),
+                Background = HexCraftThemePalette.Brush(isActive ? _theme.ActiveTabBg : _theme.InactiveTabBg),
+                Foreground = HexCraftThemePalette.Brush(isActive ? _theme.AccentBlue : _theme.SecondaryText),
+                BorderBrush = HexCraftThemePalette.Brush(isActive ? _theme.AccentBlue : _theme.PaneBorder),
                 BorderThickness = new Thickness(1),
                 Padding = new Thickness(10, 3),
                 FontSize = 11.5,
@@ -772,7 +803,7 @@ public sealed class MainWindow : Window
                 {
                     Content = "×",
                     Background = Brushes.Transparent,
-                    Foreground = Brushes.Gray,
+                    Foreground = HexCraftThemePalette.Brush(_theme.MutedText),
                     Padding = new Thickness(4, 2),
                     FontSize = 11
                 };
@@ -853,14 +884,14 @@ public sealed class MainWindow : Window
             var nameTxt = new TextBlock
             {
                 Text = entry.TypeName,
-                Foreground = new SolidColorBrush(Color.Parse("#61AFEF")),
+                Foreground = HexCraftThemePalette.Brush(_theme.AccentBlue),
                 FontFamily = new FontFamily("Cascadia Mono, Consolas, monospace"),
                 FontSize = 11.5
             };
             var valTxt = new SelectableTextBlock
             {
                 Text = entry.ValueText,
-                Foreground = new SolidColorBrush(Color.Parse("#D7DAE0")),
+                Foreground = HexCraftThemePalette.Brush(_theme.PrimaryText),
                 FontFamily = new FontFamily("Cascadia Mono, Consolas, monospace"),
                 FontSize = 11.5
             };
@@ -883,7 +914,9 @@ public sealed class MainWindow : Window
         {
             var badge = new Border
             {
-                Background = new SolidColorBrush(Color.Parse("#212836")),
+                Background = HexCraftThemePalette.Brush(_theme.CardBg),
+                BorderBrush = HexCraftThemePalette.Brush(_theme.PaneBorder),
+                BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(4),
                 Padding = new Thickness(6, 4),
                 Margin = new Thickness(0, 2)
@@ -892,14 +925,14 @@ public sealed class MainWindow : Window
             sp.Children.Add(new TextBlock
             {
                 Text = $"{match.FormatName} [{match.Category}]",
-                Foreground = new SolidColorBrush(Color.Parse("#98C379")),
+                Foreground = HexCraftThemePalette.Brush(_theme.AccentGreen),
                 FontWeight = FontWeight.Bold,
                 FontSize = 12
             });
             sp.Children.Add(new TextBlock
             {
                 Text = $"MIME: {match.MimeType} | Ext: {match.Extension} | Details: {match.Details}",
-                Foreground = new SolidColorBrush(Color.Parse("#ABB2BF")),
+                Foreground = HexCraftThemePalette.Brush(_theme.SecondaryText),
                 FontSize = 11,
                 TextWrapping = TextWrapping.Wrap
             });
@@ -907,7 +940,7 @@ public sealed class MainWindow : Window
             if (!string.IsNullOrEmpty(match.RecommendedTemplate))
             {
                 string recTpl = match.RecommendedTemplate;
-                var applyBtn = CreateActionButton($"Apply {recTpl} Template", "#C678DD", (_, _) =>
+                var applyBtn = CreateActionButton($"Apply {recTpl} Template", "purple", (_, _) =>
                 {
                     int idx = _templates
                         .Select((t, i) => (t, i))
@@ -944,7 +977,6 @@ public sealed class MainWindow : Window
         AddMetadataKeyValue("Printable ASCII", $"{report.PrintableAsciiPercent}%");
         AddMetadataKeyValue("Null Bytes (0x00)", $"{report.NullBytePercent}%");
 
-        // Block Entropy Sparkline Bar Chart
         if (report.BlockEntropies.Length > 0)
         {
             var sparkPanel = new StackPanel
@@ -959,13 +991,13 @@ public sealed class MainWindow : Window
             foreach (double be in report.BlockEntropies)
             {
                 double h = Math.Max(3, (be / 8.0) * 34.0);
-                string color = be >= 7.2 ? "#E06C75" : be >= 5.0 ? "#E5C07B" : "#56B6C2";
+                string color = be >= 7.2 ? _theme.AccentRed : be >= 5.0 ? _theme.AccentGold : _theme.AccentCyan;
                 sparkPanel.Children.Add(new Border
                 {
                     Width = barWidth,
                     Height = h,
                     VerticalAlignment = VerticalAlignment.Bottom,
-                    Background = new SolidColorBrush(Color.Parse(color)),
+                    Background = HexCraftThemePalette.Brush(color),
                     CornerRadius = new CornerRadius(1)
                 });
             }
@@ -977,7 +1009,7 @@ public sealed class MainWindow : Window
     {
         var rowBorder = new Border
         {
-            Background = new SolidColorBrush(Color.Parse("#1B202B")),
+            Background = HexCraftThemePalette.Brush(_theme.RowBg),
             CornerRadius = new CornerRadius(3),
             Padding = new Thickness(5, 3),
             Margin = new Thickness(0, 1),
@@ -988,7 +1020,7 @@ public sealed class MainWindow : Window
         var keyText = new TextBlock
         {
             Text = $"[{tag.Group}] {tag.TagName}",
-            Foreground = new SolidColorBrush(Color.Parse("#56B6C2")),
+            Foreground = HexCraftThemePalette.Brush(_theme.AccentCyan),
             FontFamily = new FontFamily("Cascadia Mono, Consolas, monospace"),
             FontSize = 11,
             TextTrimming = TextTrimming.CharacterEllipsis
@@ -998,7 +1030,7 @@ public sealed class MainWindow : Window
         var valText = new SelectableTextBlock
         {
             Text = $"{tag.Value}{offsetHint}",
-            Foreground = new SolidColorBrush(Color.Parse("#D7DAE0")),
+            Foreground = HexCraftThemePalette.Brush(_theme.PrimaryText),
             FontFamily = new FontFamily("Cascadia Mono, Consolas, monospace"),
             FontSize = 11,
             TextWrapping = TextWrapping.Wrap
@@ -1025,7 +1057,7 @@ public sealed class MainWindow : Window
         _fileMetadataPanel.Children.Add(new TextBlock
         {
             Text = title,
-            Foreground = new SolidColorBrush(Color.Parse("#E5C07B")),
+            Foreground = HexCraftThemePalette.Brush(_theme.AccentGold),
             FontWeight = FontWeight.Bold,
             FontSize = 11,
             Margin = new Thickness(0, 6, 0, 2)
@@ -1038,13 +1070,13 @@ public sealed class MainWindow : Window
         var k = new TextBlock
         {
             Text = key + ":",
-            Foreground = new SolidColorBrush(Color.Parse("#7F848E")),
+            Foreground = HexCraftThemePalette.Brush(_theme.MutedText),
             FontSize = 11.5
         };
         var v = new SelectableTextBlock
         {
             Text = value,
-            Foreground = new SolidColorBrush(Color.Parse("#D7DAE0")),
+            Foreground = HexCraftThemePalette.Brush(_theme.PrimaryText),
             FontFamily = new FontFamily("Cascadia Mono, Consolas, monospace"),
             FontSize = 11,
             TextWrapping = TextWrapping.Wrap
@@ -1096,7 +1128,18 @@ public sealed class MainWindow : Window
 
         if (!string.IsNullOrEmpty(node.ColorHex) && Color.TryParse(node.ColorHex, out Color c))
         {
-            item.Foreground = new SolidColorBrush(c);
+            if (_theme.Kind == HexCraftThemeKind.Light)
+            {
+                // Darken pastel template node text slightly on white background for crisp readability
+                item.Foreground = new SolidColorBrush(Color.FromRgb(
+                    (byte)(c.R * 0.65),
+                    (byte)(c.G * 0.65),
+                    (byte)(c.B * 0.65)));
+            }
+            else
+            {
+                item.Foreground = new SolidColorBrush(c);
+            }
         }
 
         foreach (var child in node.Children)
@@ -1366,16 +1409,24 @@ public sealed class MainWindow : Window
     private void OpenFileIntoNewTab(string filePath)
     {
         var newDoc = BinaryDocument.OpenFile(filePath);
+        // Replace initial untouched blank tab if it's still empty/unmodified
+        if (_openDocuments.Count == 1 && _openDocuments[0].FilePath is null && !_openDocuments[0].IsModified)
+        {
+            var old = _openDocuments[0];
+            _openDocuments[0] = newDoc;
+            old.Dispose();
+            SwitchToDocumentTab(0);
+            return;
+        }
+
         _openDocuments.Add(newDoc);
         SwitchToDocumentTab(_openDocuments.Count - 1);
     }
 
-    private void AddNewDemoTab()
+    private void AddNewBlankTab()
     {
-        var demoDoc = new BinaryDocument(
-            SampleBinaryFactory.CreateDemoFirmwareBlob(),
-            $"demo_firmware_{_openDocuments.Count + 1}.bin");
-        _openDocuments.Add(demoDoc);
+        var blankDoc = new BinaryDocument(new byte[256], $"Untitled_{_openDocuments.Count + 1}.bin");
+        _openDocuments.Add(blankDoc);
         SwitchToDocumentTab(_openDocuments.Count - 1);
     }
 
@@ -1434,31 +1485,29 @@ public sealed class MainWindow : Window
         }
     }
 
-    private static Border CreateTitledPane(string title, Control content)
+    private Border CreateTitledPane(string title, Control content)
     {
         var outer = new Border
         {
-            Background = new SolidColorBrush(Color.Parse("#181B22")),
-            BorderBrush = new SolidColorBrush(Color.Parse("#282E3B")),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(5)
         };
 
         var grid = new Grid { RowDefinitions = new RowDefinitions("26,*") };
 
+        var titleText = new TextBlock
+        {
+            Text = title,
+            FontSize = 11,
+            FontWeight = FontWeight.Bold,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+
         var headerBorder = new Border
         {
-            Background = new SolidColorBrush(Color.Parse("#202530")),
             CornerRadius = new CornerRadius(5, 5, 0, 0),
             Padding = new Thickness(8, 4),
-            Child = new TextBlock
-            {
-                Text = title,
-                Foreground = new SolidColorBrush(Color.Parse("#ABB2BF")),
-                FontSize = 11,
-                FontWeight = FontWeight.Bold,
-                VerticalAlignment = VerticalAlignment.Center
-            }
+            Child = titleText
         };
 
         var bodyBorder = new Border
@@ -1472,20 +1521,40 @@ public sealed class MainWindow : Window
         grid.Children.Add(headerBorder);
         grid.Children.Add(bodyBorder);
         outer.Child = grid;
+
+        _titledPanes.Add((outer, headerBorder, titleText));
         return outer;
     }
 
-    private static Button CreateActionButton(
+    private GridSplitter CreateSplitter(GridResizeDirection dir)
+    {
+        var s = new GridSplitter { ResizeDirection = dir };
+        _splitters.Add(s);
+        return s;
+    }
+
+    private TextBlock CreateToolbarLabel(string text, Thickness margin, bool bold = false)
+    {
+        var tb = new TextBlock
+        {
+            Text = text,
+            FontSize = 11.5,
+            FontWeight = bold ? FontWeight.SemiBold : FontWeight.Normal,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = margin
+        };
+        _toolbarLabels.Add(tb);
+        return tb;
+    }
+
+    private Button CreateActionButton(
         string text,
-        string accentHex,
+        string accentRole,
         EventHandler<Avalonia.Interactivity.RoutedEventArgs> onClick)
     {
         var btn = new Button
         {
             Content = text,
-            Background = new SolidColorBrush(Color.Parse("#252B37")),
-            Foreground = new SolidColorBrush(Color.Parse(accentHex)),
-            BorderBrush = new SolidColorBrush(Color.Parse(accentHex)),
             BorderThickness = new Thickness(1),
             Padding = new Thickness(8, 3),
             Margin = new Thickness(2, 0),
@@ -1493,6 +1562,7 @@ public sealed class MainWindow : Window
             FontWeight = FontWeight.SemiBold
         };
         btn.Click += onClick;
+        _themedButtons.Add((btn, accentRole));
         return btn;
     }
 
@@ -1501,7 +1571,6 @@ public sealed class MainWindow : Window
         return new TextBlock
         {
             Text = text,
-            Foreground = new SolidColorBrush(Color.Parse("#ABB2BF")),
             FontFamily = new FontFamily("Cascadia Mono, Consolas, monospace"),
             FontSize = 11.5,
             VerticalAlignment = VerticalAlignment.Center

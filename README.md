@@ -23,6 +23,7 @@
     - `UImage.bt` (Das U-Boot Legacy Firmware Images)
     - `DTB.bt` (Flattened Device Tree Blobs)
 - **Multi-Window Reverse Engineering Workspace (`HexCraft.App`)**:
+  - **Dark & Light Themes**: Switch between the default **Dark Theme** and a high-contrast **Light Theme** at any time from the top toolbar.
   - **Multi-Tab Primary Hex + ASCII View**: Hardware-accelerated virtualized rendering with `.bt` template color overlays, bookmark highlights, and a right-edge **Color & Bookmark Minimap**.
   - **Live Data Inspector**: Decodes `Int8/UInt8`, `Int16/UInt16`, `Int32/UInt32`, `Int64/UInt64`, `Float32/Float64`, 8-bit binary, `DOS Date/Time`, UNIX `time_t`, Windows `FILETIME`, ASCII, UTF-8, and UTF-16 in Little Endian or Big Endian.
   - **File Information, Magic ID, Exif Metadata & Entropy**:
@@ -126,3 +127,4 @@ sudo apt update && sudo apt install -y libfontconfig1 libice6 libsm6 libx11-6 li
 ```bash
 dotnet run --project tests/HexCraft.Tests/HexCraft.Tests.csproj
 ```
+
