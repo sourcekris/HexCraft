@@ -1,0 +1,82 @@
+//------------------------------------------------
+//--- 010 Editor Binary Template
+//
+//      File: ELF.bt
+//   Purpose: Parses Linux / Embedded ELF 32-bit & 64-bit Executables.
+//------------------------------------------------
+
+enum <uchar> ElfClass {
+    ELFCLASSNONE = 0,
+    ELFCLASS32   = 1,
+    ELFCLASS64   = 2
+};
+
+enum <uchar> ElfData {
+    ELFDATANONE = 0,
+    ELFDATA2LSB = 1,
+    ELFDATA2MSB = 2
+};
+
+enum <ushort> ElfType {
+    ET_NONE = 0,
+    ET_REL  = 1,
+    ET_EXEC = 2,
+    ET_DYN  = 3,
+    ET_CORE = 4
+};
+
+enum <ushort> ElfMachine {
+    EM_NONE    = 0,
+    EM_386     = 3,
+    EM_MIPS    = 8,
+    EM_ARM     = 40,
+    EM_X86_64  = 62,
+    EM_AARCH64 = 183,
+    EM_RISCV   = 243
+};
+
+struct ELF_IDENT {
+    char     magic[4]    <bgcolor=cLtPurple, comment="0x7F 'ELF'">;
+    ElfClass ei_class    <bgcolor=cLtBlue, comment="32-bit or 64-bit">;
+    ElfData  ei_data     <bgcolor=cLtBlue, comment="Endianness">;
+    uchar    ei_version  <bgcolor=cLtAqua>;
+    uchar    ei_osabi    <bgcolor=cLtAqua>;
+    uchar    ei_abiversion;
+    uchar    ei_pad[7]   <bgcolor=cSilver>;
+};
+
+ELF_IDENT ident;
+
+if (ident.ei_data == 2) {
+    BigEndian();
+} else {
+    LittleEndian();
+}
+
+struct ELF_HEADER {
+    ElfType    e_type      <bgcolor=cLtGreen, comment="Object file type">;
+    ElfMachine e_machine   <bgcolor=cLtGreen, comment="Target ISA">;
+    uint32     e_version   <bgcolor=cLtAqua>;
+
+    if (ident.ei_class == 2) {
+        uint64 e_entry     <format=hex, bgcolor=cLtYellow, comment="Entry point virtual address">;
+        uint64 e_phoff     <format=hex, bgcolor=cLtBlue, comment="Program header table file offset">;
+        uint64 e_shoff     <format=hex, bgcolor=cLtBlue, comment="Section header table file offset">;
+    } else {
+        uint32 e_entry     <format=hex, bgcolor=cLtYellow, comment="Entry point virtual address">;
+        uint32 e_phoff     <format=hex, bgcolor=cLtBlue, comment="Program header table file offset">;
+        uint32 e_shoff     <format=hex, bgcolor=cLtBlue, comment="Section header table file offset">;
+    }
+
+    uint32 e_flags         <format=hex, bgcolor=cSilver>;
+    ushort e_ehsize        <bgcolor=cLtAqua>;
+    ushort e_phentsize     <bgcolor=cLtAqua>;
+    ushort e_phnum         <bgcolor=cLtGreen, comment="Number of program headers">;
+    ushort e_shentsize     <bgcolor=cLtAqua>;
+    ushort e_shnum         <bgcolor=cLtGreen, comment="Number of section headers">;
+    ushort e_shstrndx      <bgcolor=cLtAqua>;
+};
+
+ELF_HEADER header;
+Printf("ELF parsed: Entry=0x%X, ProgramHeaders=%d, SectionHeaders=%d\n", header.e_entry, header.e_phnum, header.e_shnum);
+

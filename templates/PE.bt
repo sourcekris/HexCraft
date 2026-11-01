@@ -1,0 +1,78 @@
+//------------------------------------------------
+//--- 010 Editor Binary Template
+//
+//      File: PE.bt
+//   Purpose: Parses Windows Portable Executable (DOS MZ + COFF + Optional Header + Sections).
+//------------------------------------------------
+
+LittleEndian();
+
+struct IMAGE_DOS_HEADER {
+    char   e_magic[2]    <bgcolor=cLtPurple, comment="Magic 'MZ'">;
+    ushort e_cblp;
+    ushort e_cp;
+    ushort e_crlc;
+    ushort e_cparhdr;
+    ushort e_minalloc;
+    ushort e_maxalloc;
+    ushort e_ss;
+    ushort e_sp;
+    ushort e_csum;
+    ushort e_ip;
+    ushort e_cs;
+    ushort e_lfarlc;
+    ushort e_ovno;
+    ushort e_res[4];
+    ushort e_oemid;
+    ushort e_oeminfo;
+    ushort e_res2[10];
+    uint32 e_lfanew      <format=hex, bgcolor=cLtYellow, comment="Offset to PE NT Header">;
+};
+
+enum <ushort> PeMachine {
+    IMAGE_FILE_MACHINE_UNKNOWN = 0x0,
+    IMAGE_FILE_MACHINE_I386    = 0x014c,
+    IMAGE_FILE_MACHINE_ARM     = 0x01c0,
+    IMAGE_FILE_MACHINE_AMD64   = 0x8664,
+    IMAGE_FILE_MACHINE_ARM64   = 0xAA64
+};
+
+struct IMAGE_FILE_HEADER {
+    PeMachine Machine              <format=hex, bgcolor=cLtGreen>;
+    ushort    NumberOfSections     <bgcolor=cLtGreen, comment="Count of PE Sections">;
+    time_t    TimeDateStamp        <bgcolor=cLtYellow>;
+    uint32    PointerToSymbolTable <format=hex>;
+    uint32    NumberOfSymbols;
+    ushort    SizeOfOptionalHeader <bgcolor=cLtBlue>;
+    ushort    Characteristics      <format=hex, bgcolor=cLtAqua>;
+};
+
+struct IMAGE_SECTION_HEADER {
+    char   Name[8]              <bgcolor=cYellow, comment="Section Name (.text, .rdata, etc.)">;
+    uint32 VirtualSize          <format=hex, bgcolor=cLtGreen>;
+    uint32 VirtualAddress       <format=hex, bgcolor=cLtBlue>;
+    uint32 SizeOfRawData        <format=hex, bgcolor=cLtGreen>;
+    uint32 PointerToRawData     <format=hex, bgcolor=cLtBlue>;
+    uint32 PointerToRelocations <format=hex>;
+    uint32 PointerToLinenumbers <format=hex>;
+    ushort NumberOfRelocations;
+    ushort NumberOfLinenumbers;
+    uint32 Characteristics      <format=hex, bgcolor=cLtRed>;
+};
+
+IMAGE_DOS_HEADER dosHeader;
+
+if (dosHeader.e_lfanew > 0 && dosHeader.e_lfanew < FileSize()) {
+    FSeek(dosHeader.e_lfanew);
+    char peSignature[4] <bgcolor=cLtPurple, comment="PE\\0\\0">;
+    IMAGE_FILE_HEADER coffHeader;
+
+    if (coffHeader.SizeOfOptionalHeader > 0) {
+        uchar optionalHeader[coffHeader.SizeOfOptionalHeader] <bgcolor=cLtAqua, comment="PE32 / PE32+ Optional Header">;
+    }
+
+    if (coffHeader.NumberOfSections > 0 && coffHeader.NumberOfSections < 64) {
+        IMAGE_SECTION_HEADER sections[coffHeader.NumberOfSections];
+    }
+}
+

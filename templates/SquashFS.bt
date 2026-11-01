@@ -1,0 +1,58 @@
+//------------------------------------------------
+//--- 010 Editor Binary Template
+//
+//      File: SquashFS.bt
+//   Purpose: Parses SquashFS v4.0 Superblock (used in embedded Linux & router firmware).
+//------------------------------------------------
+
+LittleEndian();
+
+enum <ushort> SquashFsCompression {
+    ZLIB_COMPRESSION = 1,
+    LZMA_COMPRESSION = 2,
+    LZO_COMPRESSION  = 3,
+    XZ_COMPRESSION   = 4,
+    LZ4_COMPRESSION  = 5,
+    ZSTD_COMPRESSION = 6
+};
+
+struct SQUASHFS_SUPERBLOCK {
+    char   s_magic[4]              <bgcolor=cLtPurple, comment="Magic 'hsqs' (0x73717368)">;
+    uint32 inodes                  <bgcolor=cLtGreen, comment="Total Inode count">;
+    time_t mkfs_time               <bgcolor=cLtYellow, comment="Filesystem creation timestamp">;
+    uint32 block_size              <bgcolor=cLtBlue, comment="Data block size in bytes">;
+    uint32 fragments               <bgcolor=cLtGreen, comment="Fragment entry count">;
+    SquashFsCompression compression <bgcolor=cLtAqua, comment="Compression algorithm">;
+    ushort block_log               <bgcolor=cLtBlue, comment="log2(block_size)">;
+    ushort flags                   <format=hex, bgcolor=cLtYellow>;
+    ushort no_ids                  <bgcolor=cLtGreen, comment="UID/GID count">;
+    ushort s_major                 <bgcolor=cLtPurple, comment="Major version (4)">;
+    ushort s_minor                 <bgcolor=cLtPurple, comment="Minor version (0)">;
+    uint64 root_inode              <format=hex, bgcolor=cLtAqua>;
+    uint64 bytes_used              <bgcolor=cLtGreen, comment="Total compressed filesystem size">;
+    uint64 id_table_start          <format=hex, bgcolor=cSilver>;
+    uint64 xattr_id_table_start    <format=hex, bgcolor=cSilver>;
+    uint64 inode_table_start       <format=hex, bgcolor=cSilver>;
+    uint64 directory_table_start   <format=hex, bgcolor=cSilver>;
+    uint64 fragment_table_start    <format=hex, bgcolor=cSilver>;
+    uint64 lookup_table_start      <format=hex, bgcolor=cSilver>;
+};
+
+// If the file doesn't start with 'hsqs' at offset 0, scan for an embedded SquashFS superblock
+local uint magic0 = ReadUInt(0);
+if (magic0 != 0x73717368) {
+    local int pos = 0;
+    while (pos <= FileSize() - 96) {
+        if (ReadUInt(pos) == 0x73717368) {
+            Printf("Found embedded SquashFS superblock at offset 0x%X\n", pos);
+            FSeek(pos);
+            break;
+        }
+        pos += 4;
+    }
+}
+
+SQUASHFS_SUPERBLOCK superblock;
+Printf("SquashFS v%d.%d: %d inodes, block_size=%d, bytes_used=%d\n",
+    superblock.s_major, superblock.s_minor, superblock.inodes, superblock.block_size, superblock.bytes_used);
+

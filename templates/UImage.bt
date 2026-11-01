@@ -1,0 +1,70 @@
+//------------------------------------------------
+//--- 010 Editor Binary Template
+//
+//      File: UImage.bt
+//   Purpose: Parses Das U-Boot Legacy Firmware Image Headers (uImage).
+//------------------------------------------------
+
+BigEndian();
+
+enum <uchar> UBootOs {
+    IH_OS_INVALID = 0,
+    IH_OS_OPENBSD = 1,
+    IH_OS_NETBSD  = 2,
+    IH_OS_FREEBSD = 3,
+    IH_OS_LINUX   = 5,
+    IH_OS_U_BOOT  = 17
+};
+
+enum <uchar> UBootArch {
+    IH_ARCH_INVALID = 0,
+    IH_ARCH_ARM     = 2,
+    IH_ARCH_I386    = 3,
+    IH_ARCH_MIPS    = 5,
+    IH_ARCH_PPC     = 7,
+    IH_ARCH_ARM64   = 22,
+    IH_ARCH_RISCV   = 26
+};
+
+enum <uchar> UBootImageType {
+    IH_TYPE_INVALID    = 0,
+    IH_TYPE_STANDALONE = 1,
+    IH_TYPE_KERNEL     = 2,
+    IH_TYPE_RAMDISK    = 3,
+    IH_TYPE_MULTI      = 4,
+    IH_TYPE_FIRMWARE   = 5,
+    IH_TYPE_SCRIPT     = 6,
+    IH_TYPE_FLATDT     = 8
+};
+
+enum <uchar> UBootComp {
+    IH_COMP_NONE  = 0,
+    IH_COMP_GZIP  = 1,
+    IH_COMP_BZIP2 = 2,
+    IH_COMP_LZMA  = 3,
+    IH_COMP_LZO   = 4,
+    IH_COMP_LZ4   = 5,
+    IH_COMP_ZSTD  = 6
+};
+
+struct UIMAGE_HEADER {
+    uint32         ih_magic <format=hex, bgcolor=cLtPurple, comment="0x27051956">;
+    uint32         ih_hcrc  <format=hex, bgcolor=cLtRed, comment="Image Header CRC32">;
+    time_t         ih_time  <bgcolor=cLtYellow, comment="Image Creation Timestamp">;
+    uint32         ih_size  <bgcolor=cLtGreen, comment="Image Data Size">;
+    uint32         ih_load  <format=hex, bgcolor=cLtBlue, comment="Data Load Address">;
+    uint32         ih_ep    <format=hex, bgcolor=cLtBlue, comment="Entry Point Address">;
+    uint32         ih_dcrc  <format=hex, bgcolor=cLtRed, comment="Image Data CRC32">;
+    UBootOs        ih_os    <bgcolor=cLtAqua>;
+    UBootArch      ih_arch  <bgcolor=cLtAqua>;
+    UBootImageType ih_type  <bgcolor=cLtAqua>;
+    UBootComp      ih_comp  <bgcolor=cLtAqua>;
+    char           ih_name[32] <bgcolor=cYellow, comment="Image Name">;
+};
+
+UIMAGE_HEADER header;
+
+if (header.ih_size > 0 && FTell() + header.ih_size <= FileSize()) {
+    uchar payload[header.ih_size] <bgcolor=cSilver, comment="Firmware Payload">;
+}
+

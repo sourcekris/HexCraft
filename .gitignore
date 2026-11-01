@@ -1,0 +1,58 @@
+## Ignore Visual Studio, .NET, Rider, VS Code, and HexCraft temporary/build files
+
+# Build results
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+[Pp]ublish/
+publish/
+artifacts/
+out/
+
+# Visual Studio / .NET / Rider user-specific files
+.vs/
+.idea/
+.vscode/
+*.rsuser
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.userprefs
+project.lock.json
+project.fragment.lock.json
+
+# Test results & coverage
+[Tt]est[Rr]esult*/
+[Bb]uild[Ll]og.*
+*.trx
+*.coverage
+*.coveragexml
+TestResults/
+
+# NuGet Packages
+*.nupkg
+*.snupkg
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+
+# HexCraft temporary save & extraction artifacts
+*.hexcraft.tmp
+HexCraft_Extractions/
+squashfs-root/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+Desktop.ini

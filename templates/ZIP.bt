@@ -1,0 +1,97 @@
+//------------------------------------------------
+//--- 010 Editor Binary Template
+//
+//      File: ZIP.bt
+//   Purpose: Parses PKZIP / JAR / APK archives.
+//------------------------------------------------
+
+LittleEndian();
+
+enum <ushort> ZipCompression {
+    COMP_STORED   = 0,
+    COMP_SHRUNK   = 1,
+    COMP_DEFLATED = 8,
+    COMP_BZIP2    = 12,
+    COMP_LZMA     = 14,
+    COMP_ZSTD     = 93
+};
+
+struct ZIP_LOCAL_FILE {
+    uint32 signature          <format=hex, bgcolor=cLtPurple, comment="0x04034B50">;
+    ushort version_needed     <bgcolor=cLtBlue>;
+    ushort flags              <format=hex, bgcolor=cLtBlue>;
+    ZipCompression compression <bgcolor=cLtAqua>;
+    dostime mod_time          <bgcolor=cLtYellow>;
+    dosdate mod_date          <bgcolor=cLtYellow>;
+    uint32 crc32              <format=hex, bgcolor=cLtRed>;
+    uint32 compressed_size    <bgcolor=cLtGreen>;
+    uint32 uncompressed_size  <bgcolor=cLtGreen>;
+    ushort file_name_length   <bgcolor=cLtBlue>;
+    ushort extra_field_length <bgcolor=cLtBlue>;
+
+    if (file_name_length > 0) {
+        char file_name[file_name_length] <bgcolor=cYellow, comment="Entry Filename">;
+    }
+    if (extra_field_length > 0) {
+        uchar extra_field[extra_field_length] <bgcolor=cSilver>;
+    }
+    if (compressed_size > 0) {
+        uchar compressed_data[compressed_size] <bgcolor=cLtGray, comment="Compressed Payload">;
+    }
+};
+
+struct ZIP_CENTRAL_DIR_ENTRY {
+    uint32 signature          <format=hex, bgcolor=cLtPurple, comment="0x02014B50">;
+    ushort version_made_by    <bgcolor=cLtBlue>;
+    ushort version_needed     <bgcolor=cLtBlue>;
+    ushort flags              <format=hex, bgcolor=cLtBlue>;
+    ZipCompression compression <bgcolor=cLtAqua>;
+    dostime mod_time          <bgcolor=cLtYellow>;
+    dosdate mod_date          <bgcolor=cLtYellow>;
+    uint32 crc32              <format=hex, bgcolor=cLtRed>;
+    uint32 compressed_size    <bgcolor=cLtGreen>;
+    uint32 uncompressed_size  <bgcolor=cLtGreen>;
+    ushort file_name_length;
+    ushort extra_field_length;
+    ushort file_comment_length;
+    ushort disk_number_start;
+    ushort internal_attrs;
+    uint32 external_attrs;
+    uint32 local_header_offset <format=hex, bgcolor=cLtAqua>;
+
+    if (file_name_length > 0)
+        char file_name[file_name_length] <bgcolor=cYellow>;
+    if (extra_field_length > 0)
+        uchar extra_field[extra_field_length];
+    if (file_comment_length > 0)
+        char file_comment[file_comment_length];
+};
+
+struct ZIP_END_LOCATOR {
+    uint32 signature          <format=hex, bgcolor=cLtPurple, comment="0x06054B50">;
+    ushort disk_number;
+    ushort start_disk;
+    ushort disk_entries       <bgcolor=cLtGreen>;
+    ushort total_entries      <bgcolor=cLtGreen>;
+    uint32 central_dir_size   <bgcolor=cLtAqua>;
+    uint32 central_dir_offset <format=hex, bgcolor=cLtAqua>;
+    ushort comment_length;
+    if (comment_length > 0)
+        char comment[comment_length];
+};
+
+local uint tag = 0;
+while (!FEof()) {
+    tag = ReadUInt(FTell());
+    if (tag == 0x04034B50) {
+        ZIP_LOCAL_FILE record;
+    } else if (tag == 0x02014B50) {
+        ZIP_CENTRAL_DIR_ENTRY dirEntry;
+    } else if (tag == 0x06054B50) {
+        ZIP_END_LOCATOR endLocator;
+        break;
+    } else {
+        break;
+    }
+}
+

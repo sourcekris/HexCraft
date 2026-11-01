@@ -1,0 +1,56 @@
+//------------------------------------------------
+//--- 010 Editor Binary Template
+//
+//      File: PNG.bt
+//   Purpose: Parses Portable Network Graphics (PNG) images and chunks.
+//------------------------------------------------
+
+BigEndian();
+
+enum <uchar> PngColorType {
+    Grayscale       = 0,
+    RGB_Truecolor   = 2,
+    Indexed_Palette = 3,
+    Grayscale_Alpha = 4,
+    RGBA_Truecolor  = 6
+};
+
+struct PNG_SIGNATURE {
+    uchar magic[8] <bgcolor=cLtPurple, comment="PNG 8-byte Magic Signature">;
+};
+
+struct IHDR_DATA {
+    uint32 width             <bgcolor=cLtGreen, comment="Image Width in pixels">;
+    uint32 height            <bgcolor=cLtGreen, comment="Image Height in pixels">;
+    uchar  bit_depth         <bgcolor=cLtBlue, comment="Bits per sample">;
+    PngColorType color_type  <bgcolor=cLtBlue, comment="Color interpretation">;
+    uchar  compression       <bgcolor=cLtAqua>;
+    uchar  filter            <bgcolor=cLtAqua>;
+    uchar  interlace         <bgcolor=cLtAqua>;
+};
+
+struct PNG_CHUNK {
+    uint32 length     <bgcolor=cLtYellow, comment="Chunk Data Length">;
+    char   type[4]    <bgcolor=cLtBlue, comment="FourCC Chunk Type">;
+
+    if (type == "IHDR" && length == 13) {
+        IHDR_DATA ihdr;
+    } else if (length > 0) {
+        uchar data[length] <bgcolor=cSilver, comment="Chunk Payload">;
+    }
+
+    uint32 crc32 <format=hex, bgcolor=cLtRed, comment="Chunk CRC32 Checksum">;
+};
+
+PNG_SIGNATURE signature;
+
+local int chunkCount = 0;
+while (!FEof() && chunkCount < 128) {
+    PNG_CHUNK chunk;
+    chunkCount++;
+    if (chunk.type == "IEND") {
+        Printf("Parsed PNG successfully (%d chunks).\n", chunkCount);
+        break;
+    }
+}
+

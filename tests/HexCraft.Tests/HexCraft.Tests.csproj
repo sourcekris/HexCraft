@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GenerateProgramFile>false</GenerateProgramFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.assert" Version="2.9.2" />
+    <PackageReference Include="xunit.extensibility.core" Version="2.9.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\HexCraft.Core\HexCraft.Core.csproj" />
+    <ProjectReference Include="..\..\src\HexCraft.Templates\HexCraft.Templates.csproj" />
+    <ProjectReference Include="..\..\src\HexCraft.Tools\HexCraft.Tools.csproj" />
+  </ItemGroup>
+
+</Project>

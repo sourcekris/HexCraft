@@ -1,0 +1,46 @@
+//------------------------------------------------
+//--- 010 Editor Binary Template
+//
+//      File: DTB.bt
+//   Purpose: Parses Flattened Device Tree Blob (FDT / DTB) headers and memory reservation blocks.
+//------------------------------------------------
+
+BigEndian();
+
+struct FDT_HEADER {
+    uint32 magic                 <format=hex, bgcolor=cLtPurple, comment="0xD00DFEED">;
+    uint32 totalsize             <bgcolor=cLtGreen, comment="Total DTB size in bytes">;
+    uint32 off_dt_struct         <format=hex, bgcolor=cLtBlue, comment="Offset to structure block">;
+    uint32 off_dt_strings        <format=hex, bgcolor=cLtBlue, comment="Offset to strings block">;
+    uint32 off_mem_rsvmap        <format=hex, bgcolor=cLtAqua, comment="Offset to memory reservation block">;
+    uint32 version               <bgcolor=cLtYellow, comment="DTB format version">;
+    uint32 last_comp_version     <bgcolor=cLtYellow, comment="Last compatible version">;
+    uint32 boot_cpuid_phys       <bgcolor=cSilver>;
+    uint32 size_dt_strings       <bgcolor=cLtGreen, comment="Length of strings block">;
+    uint32 size_dt_struct        <bgcolor=cLtGreen, comment="Length of structure block">;
+};
+
+struct FDT_RESERVE_ENTRY {
+    uint64 address <format=hex, bgcolor=cLtAqua>;
+    uint64 size    <format=hex, bgcolor=cLtGreen>;
+};
+
+FDT_HEADER fdtHeader;
+
+if (fdtHeader.off_mem_rsvmap > 0 && fdtHeader.off_mem_rsvmap < FileSize()) {
+    FSeek(fdtHeader.off_mem_rsvmap);
+    FDT_RESERVE_ENTRY reserveEntry;
+}
+
+if (fdtHeader.off_dt_struct > 0 && fdtHeader.size_dt_struct > 0 &&
+    fdtHeader.off_dt_struct + fdtHeader.size_dt_struct <= FileSize()) {
+    FSeek(fdtHeader.off_dt_struct);
+    uchar dt_struct_block[fdtHeader.size_dt_struct] <bgcolor=cLtGray, comment="Device Tree Structure Tokens">;
+}
+
+if (fdtHeader.off_dt_strings > 0 && fdtHeader.size_dt_strings > 0 &&
+    fdtHeader.off_dt_strings + fdtHeader.size_dt_strings <= FileSize()) {
+    FSeek(fdtHeader.off_dt_strings);
+    uchar dt_strings_block[fdtHeader.size_dt_strings] <bgcolor=cYellow, comment="Property Name Strings Table">;
+}
+
