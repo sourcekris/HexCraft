@@ -60,6 +60,10 @@ public sealed class FirmwareExtractorRegistry
         {
             registry.Register(extractor);
         }
+        foreach (var extractor in IdArcFirmwareExtractors.All)
+        {
+            registry.Register(extractor);
+        }
         return registry;
     }
 
@@ -80,13 +84,18 @@ public sealed class FirmwareExtractorRegistry
         var allExtractedFiles = new List<string>();
         var log = new StringBuilder();
 
-        IFirmwareExtractor? matched = null;
-        foreach (var extractor in _extractors)
+        IFirmwareExtractor? matched = _extractors.FirstOrDefault(
+            e => string.Equals(e.Id, signatureId, StringComparison.OrdinalIgnoreCase));
+
+        if (matched is null)
         {
-            if (extractor.CanExtract(signatureId, signatureType, payload))
+            foreach (var extractor in _extractors)
             {
-                matched = extractor;
-                break;
+                if (extractor.CanExtract(signatureId, signatureType, payload))
+                {
+                    matched = extractor;
+                    break;
+                }
             }
         }
 
@@ -125,9 +134,9 @@ public sealed class FirmwareExtractorRegistry
                         ? (int)hit.EstimatedSize
                         : (int)(childBytes.Length - hit.Offset);
 
-                    string hitSigId = hit.SourceEngine.Contains(':')
-                        ? hit.SourceEngine.Split(':')[^1]
-                        : hit.SignatureType;
+                    string hitSigId = hit.SourceEngine.Contains('.')
+                        ? hit.SourceEngine.Split('.')[^1]
+                        : (hit.SourceEngine.Contains(':') ? hit.SourceEngine.Split(':')[^1] : hit.SignatureType);
 
                     string subDir = Path.Combine(
                         outputDirectory,

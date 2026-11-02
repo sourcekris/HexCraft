@@ -21,18 +21,31 @@ public static class BuiltinFirmwareExtractors
 {
     public static IReadOnlyList<IFirmwareExtractor> All { get; } = new IFirmwareExtractor[]
     {
+        new SquashFsExtractor(),
         new CramFsExtractor(),
         new RomFsExtractor(),
+        new Jffs2Extractor(),
+        new ExtFsExtractor(),
+        new UbiExtractor(),
         new DtbExtractor(),
         new UImageExtractor(),
         new TrxExtractor(),
         new SeamaExtractor(),
+        new DlobExtractor(),
         new CpioExtractor(),
         new TarExtractor(),
+        new SevenZipExtractor(),
+        new ZipExtractor(),
         new GzipExtractor(),
         new ZlibExtractor(),
-        new ZipExtractor(),
+        new Bzip2Extractor(),
+        new LzmaExtractor(),
+        new XzExtractor(),
+        new ZstdExtractor(),
         new PemExtractor(),
+        new OpenSslExtractor(),
+        new ElfExtractor(),
+        new PngExtractor(),
     };
 }
 

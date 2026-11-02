@@ -117,13 +117,17 @@ public static class FirmwareToolService
 
         Directory.CreateDirectory(baseDir);
 
-        // If TAR was matched at the +257 "ustar" magic offset, rewind 257 bytes to the start of the 512-byte TAR block
+        // Adjust start offset if TAR (+257 "ustar") or EXT2/3/4 (+1024 superblock) was matched inside its container
         long effectiveStart = entry.Offset;
         if (entry.SignatureType.Contains("TAR", StringComparison.OrdinalIgnoreCase) && entry.Offset >= 257)
         {
             byte[] checkUstar = doc.ReadBytes(entry.Offset, 5);
             if (checkUstar.AsSpan().SequenceEqual("ustar"u8))
                 effectiveStart = entry.Offset - 257;
+        }
+        else if (entry.SignatureType.Contains("EXT2/3/4", StringComparison.OrdinalIgnoreCase) && entry.Offset >= 1024)
+        {
+            effectiveStart = entry.Offset - 1024;
         }
 
         long carveLength = entry.EstimatedSize > 0
@@ -137,39 +141,29 @@ public static class FirmwareToolService
         await File.WriteAllBytesAsync(carvedFilePath, carvedBytes, ct);
         log.AppendLine($"[+] Carved {carvedBytes.Length:N0} bytes from offset 0x{effectiveStart:X8} [{entry.SourceEngine}] -> {carvedFilePath}");
 
+        // Extract using HexCraft's internal FirmwareExtractorRegistry (+ Matryoshka recursion)
+        string sigId = entry.SourceEngine.Contains(':')
+            ? entry.SourceEngine.Split(':')[^1]
+            : entry.SignatureType;
+
+        byte[] payloadForExtractor = entry.SignatureType.Contains("ZIP", StringComparison.OrdinalIgnoreCase)
+            ? doc.ReadBytes(effectiveStart, (int)Math.Min(doc.Length - effectiveStart, 64 * 1024 * 1024))
+            : carvedBytes;
+
+        var extractResult = DefaultExtractors.ExtractPayload(
+            payloadForExtractor,
+            sigId,
+            entry.SignatureType,
+            baseDir,
+            recursiveScanner: DefaultRegistry,
+            maxRecursionDepth: 2);
+
+        log.AppendLine(extractResult.LogMessage);
+
         if (entry.CanUnsquashfs)
         {
             string squashOutDir = Path.Combine(baseDir, "squashfs-root");
-            log.AppendLine($"[*] Attempting unsquashfs extraction into {squashOutDir}...");
-            bool extracted = await TryRunUnsquashfsAsync(carvedFilePath, squashOutDir, log, ct);
-            if (!extracted)
-            {
-                log.AppendLine("[i] External unsquashfs binary not invoked; generating SquashFS superblock metadata summary.");
-                string metaPath = Path.Combine(baseDir, "squashfs_superblock_info.txt");
-                await File.WriteAllTextAsync(metaPath,
-                    $"SquashFS Image Carved by HexCraft\nOffset: 0x{entry.Offset:X8}\nSize: {carvedBytes.Length} bytes\nDetails: {entry.Description}\n", ct);
-            }
-        }
-        else
-        {
-            // Extract using HexCraft's internal FirmwareExtractorRegistry (+ Matryoshka recursion)
-            string sigId = entry.SourceEngine.Contains(':')
-                ? entry.SourceEngine.Split(':')[^1]
-                : entry.SignatureType;
-
-            byte[] payloadForExtractor = entry.SignatureType.Contains("ZIP", StringComparison.OrdinalIgnoreCase)
-                ? doc.ReadBytes(effectiveStart, (int)Math.Min(doc.Length - effectiveStart, 64 * 1024 * 1024))
-                : carvedBytes;
-
-            var extractResult = DefaultExtractors.ExtractPayload(
-                payloadForExtractor,
-                sigId,
-                entry.SignatureType,
-                baseDir,
-                recursiveScanner: DefaultRegistry,
-                maxRecursionDepth: 2);
-
-            log.AppendLine(extractResult.LogMessage);
+            await TryRunUnsquashfsAsync(carvedFilePath, squashOutDir, log, ct);
         }
 
         var files = Directory.GetFiles(baseDir, "*", SearchOption.AllDirectories)

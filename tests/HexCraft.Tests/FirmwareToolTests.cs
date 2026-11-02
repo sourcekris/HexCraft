@@ -209,7 +209,7 @@ public class FirmwareToolTests
         using var doc = new BinaryDocument(ms.ToArray(), "extended_sigs.bin");
         var matches = FirmwareToolService.ScanSignatures(doc);
 
-        Assert.Equal(24, FirmwareToolService.DefaultRegistry.Parsers.Count);
+        Assert.Equal(35, FirmwareToolService.DefaultRegistry.Parsers.Count);
         Assert.Contains(matches, m => m.SignatureType == "Broadcom TRX Firmware");
         Assert.Contains(matches, m => m.SignatureType == "SEAMA Firmware Header");
         Assert.Contains(matches, m => m.SignatureType == "POSIX TAR Archive" && m.Description.Contains("etc/passwd"));
@@ -375,6 +375,312 @@ public class FirmwareToolTests
             // Verify both the TRX partition AND the Matryoshka-unpacked ROMFS init.sh were extracted!
             Assert.Contains(trxRes.ExtractedFiles, f => f.EndsWith("trx_partition_0.bin"));
             Assert.Contains(trxRes.ExtractedFiles, f => f.EndsWith("init.sh"));
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+                Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void AllSignatureTypes_Have_Matching_Extractors_And_Unpack_Jffs2_ExtFs_Ubi_SquashFs_Bzip2_Xz_Zstd()
+    {
+        var sigRegistry = FirmwareToolService.DefaultRegistry;
+        var extRegistry = FirmwareToolService.DefaultExtractors;
+
+        // 1. Verify all 35 signature parsers (24 Binwalk + 11 IDArc) map to a registered IFirmwareExtractor
+        Assert.Equal(35, sigRegistry.Parsers.Count);
+        foreach (var parser in sigRegistry.Parsers)
+        {
+            Assert.Contains(extRegistry.Extractors, e => e.CanExtract(parser.Name, parser.DisplayName, ReadOnlySpan<byte>.Empty));
+        }
+
+        string tempRoot = Path.Combine(Path.GetTempPath(), "HexCraft_ExtAllTests_" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            // 2. JFFS2 Image (DIRENT for "config.json" ino=2 under root pino=1 + zlib-compressed INODE for ino=2)
+            byte[] jffsPayload = Encoding.UTF8.GetBytes("{\"device\":\"HexCraft-Router\"}");
+            byte[] jffsZlib;
+            using (var zMs = new MemoryStream())
+            {
+                using (var zl = new System.IO.Compression.ZLibStream(zMs, System.IO.Compression.CompressionLevel.Optimal, leaveOpen: true))
+                    zl.Write(jffsPayload);
+                jffsZlib = zMs.ToArray();
+            }
+
+            byte[] direntNode = new byte[52]; // 40 + "config.json" (11B) + 1 pad = 52
+            BinaryPrimitives.WriteUInt16LittleEndian(direntNode.AsSpan(0, 2), 0x1985);
+            BinaryPrimitives.WriteUInt16LittleEndian(direntNode.AsSpan(2, 2), 0xE001); // DIRENT
+            BinaryPrimitives.WriteUInt32LittleEndian(direntNode.AsSpan(4, 4), 51);     // totlen = 40 + 11
+            BinaryPrimitives.WriteUInt32LittleEndian(direntNode.AsSpan(12, 4), 1);     // pino = 1 (root)
+            BinaryPrimitives.WriteUInt32LittleEndian(direntNode.AsSpan(16, 4), 1);     // version = 1
+            BinaryPrimitives.WriteUInt32LittleEndian(direntNode.AsSpan(20, 4), 2);     // ino = 2
+            direntNode[28] = 11; // nsize
+            direntNode[29] = 8;  // DT_REG
+            "config.json"u8.CopyTo(direntNode.AsSpan(40, 11));
+
+            int inodeTotLen = 68 + jffsZlib.Length;
+            byte[] inodeNode = new byte[(inodeTotLen + 3) & ~3];
+            BinaryPrimitives.WriteUInt16LittleEndian(inodeNode.AsSpan(0, 2), 0x1985);
+            BinaryPrimitives.WriteUInt16LittleEndian(inodeNode.AsSpan(2, 2), 0xE002); // INODE
+            BinaryPrimitives.WriteUInt32LittleEndian(inodeNode.AsSpan(4, 4), (uint)inodeTotLen);
+            BinaryPrimitives.WriteUInt32LittleEndian(inodeNode.AsSpan(12, 4), 2);    // ino = 2
+            BinaryPrimitives.WriteUInt32LittleEndian(inodeNode.AsSpan(16, 4), 1);    // version = 1
+            BinaryPrimitives.WriteUInt32LittleEndian(inodeNode.AsSpan(28, 4), (uint)jffsPayload.Length); // isize
+            BinaryPrimitives.WriteUInt32LittleEndian(inodeNode.AsSpan(44, 4), 0);    // offset = 0
+            BinaryPrimitives.WriteUInt32LittleEndian(inodeNode.AsSpan(48, 4), (uint)jffsZlib.Length);    // csize
+            BinaryPrimitives.WriteUInt32LittleEndian(inodeNode.AsSpan(52, 4), (uint)jffsPayload.Length); // dsize
+            inodeNode[56] = 0x06; // JFFS2_COMPR_ZLIB
+            jffsZlib.AsSpan().CopyTo(inodeNode.AsSpan(68));
+
+            byte[] jffsImg = new byte[direntNode.Length + inodeNode.Length];
+            direntNode.AsSpan().CopyTo(jffsImg.AsSpan(0));
+            inodeNode.AsSpan().CopyTo(jffsImg.AsSpan(direntNode.Length));
+
+            var jffsRes = extRegistry.ExtractPayload(jffsImg, "jffs2", "JFFS2 Filesystem", Path.Combine(tempRoot, "jffs2_out"));
+            Assert.True(jffsRes.Success);
+            Assert.Contains(jffsRes.ExtractedFiles, f => f.EndsWith("config.json") && File.ReadAllText(f) == "{\"device\":\"HexCraft-Router\"}");
+
+            // 3. Linux EXT4 Image (1024B blocks: Block 1=SB, Block 2=BGDT, Block 3=InodeTable, Block 4=RootDir, Block 5=FileData)
+            byte[] extImg = new byte[6 * 1024];
+            var sb = extImg.AsSpan(1024, 1024);
+            BinaryPrimitives.WriteUInt32LittleEndian(sb.Slice(0x00, 4), 16);   // s_inodes_count
+            BinaryPrimitives.WriteUInt32LittleEndian(sb.Slice(0x04, 4), 6);    // s_blocks_count
+            BinaryPrimitives.WriteUInt32LittleEndian(sb.Slice(0x18, 4), 0);    // 1024B blocks
+            BinaryPrimitives.WriteUInt32LittleEndian(sb.Slice(0x20, 4), 1024); // blocks_per_group
+            BinaryPrimitives.WriteUInt32LittleEndian(sb.Slice(0x28, 4), 16);   // inodes_per_group
+            BinaryPrimitives.WriteUInt16LittleEndian(sb.Slice(0x38, 2), 0xEF53);
+            BinaryPrimitives.WriteUInt32LittleEndian(sb.Slice(0x4C, 4), 1);    // rev 1
+            BinaryPrimitives.WriteUInt16LittleEndian(sb.Slice(0x58, 2), 128);  // inode_size = 128
+            // Block 2 (offset 2048): BGDT -> bg_inode_table = 3
+            BinaryPrimitives.WriteUInt32LittleEndian(extImg.AsSpan(2048 + 8, 4), 3);
+            // Block 3 (offset 3072): Inode #2 (Root dir) is at index 1 -> offset 3072 + 128
+            var rootIno = extImg.AsSpan(3072 + 128, 128);
+            BinaryPrimitives.WriteUInt16LittleEndian(rootIno.Slice(0, 2), 0x41ED); // dir
+            BinaryPrimitives.WriteUInt32LittleEndian(rootIno.Slice(4, 4), 1024);   // size = 1024
+            BinaryPrimitives.WriteUInt32LittleEndian(rootIno.Slice(40, 4), 4);     // i_block[0] = Block 4
+            // Inode #3 ("passwd" regular file) at index 2 -> offset 3072 + 256, using EXT4 Extent Tree (0xF30A)
+            var fileIno = extImg.AsSpan(3072 + 256, 128);
+            BinaryPrimitives.WriteUInt16LittleEndian(fileIno.Slice(0, 2), 0x81A4); // reg file
+            BinaryPrimitives.WriteUInt32LittleEndian(fileIno.Slice(4, 4), 19);     // "root:x:0:0:ext4fs\n" (18B) + 1
+            BinaryPrimitives.WriteUInt32LittleEndian(fileIno.Slice(32, 4), 0x80000); // EXT4_EXTENTS_FL
+            BinaryPrimitives.WriteUInt16LittleEndian(fileIno.Slice(40, 2), 0xF30A);  // eh_magic
+            BinaryPrimitives.WriteUInt16LittleEndian(fileIno.Slice(42, 2), 1);       // eh_entries = 1
+            BinaryPrimitives.WriteUInt16LittleEndian(fileIno.Slice(46, 2), 0);       // eh_depth = 0
+            BinaryPrimitives.WriteUInt16LittleEndian(fileIno.Slice(52 + 4, 2), 1);   // ee_len = 1 block
+            BinaryPrimitives.WriteUInt32LittleEndian(fileIno.Slice(52 + 8, 4), 5);   // ee_start_lo = Block 5
+            // Block 4 (offset 4096): Root directory entry pointing to Inode #3 ("passwd")
+            var dirBlk = extImg.AsSpan(4096, 1024);
+            BinaryPrimitives.WriteUInt32LittleEndian(dirBlk.Slice(0, 4), 3);    // inode = 3
+            BinaryPrimitives.WriteUInt16LittleEndian(dirBlk.Slice(4, 2), 1024); // rec_len = 1024
+            dirBlk[6] = 6; // name_len = 6
+            dirBlk[7] = 1; // FT_REG_FILE
+            "passwd"u8.CopyTo(dirBlk.Slice(8, 6));
+            // Block 5 (offset 5120): File content
+            "root:x:0:0:ext4fs!\n"u8.CopyTo(extImg.AsSpan(5120, 19));
+
+            var extRes = extRegistry.ExtractPayload(extImg, "extfs", "Linux EXT2/3/4 Filesystem", Path.Combine(tempRoot, "ext_out"));
+            Assert.True(extRes.Success);
+            Assert.Contains(extRes.ExtractedFiles, f => f.EndsWith("passwd") && File.ReadAllText(f) == "root:x:0:0:ext4fs!\n");
+
+            // 4. UBI Image (2 PEBs of 16KB: PEB 0 = Layout Volume Table naming vol 0 "rootfs", PEB 1 = Vol 0 LEB 0)
+            byte[] ubiImg = new byte[32 * 1024];
+            // PEB 0 @ 0:
+            "UBI#"u8.CopyTo(ubiImg.AsSpan(0, 4));
+            BinaryPrimitives.WriteUInt32BigEndian(ubiImg.AsSpan(16, 4), 64);  // vid_hdr @ +64
+            BinaryPrimitives.WriteUInt32BigEndian(ubiImg.AsSpan(20, 4), 128); // data @ +128
+            "UBI!"u8.CopyTo(ubiImg.AsSpan(64, 4));
+            BinaryPrimitives.WriteUInt32BigEndian(ubiImg.AsSpan(64 + 8, 4), 0x7FFFEFFF); // Layout volume
+            // Volume table record #0 @ +128: reserved_pebs=1, name_len=6, name="rootfs"
+            BinaryPrimitives.WriteUInt32BigEndian(ubiImg.AsSpan(128, 4), 1);
+            BinaryPrimitives.WriteUInt16BigEndian(ubiImg.AsSpan(128 + 21, 2), 6);
+            "rootfs"u8.CopyTo(ubiImg.AsSpan(128 + 23, 6));
+            // PEB 1 @ 16384:
+            "UBI#"u8.CopyTo(ubiImg.AsSpan(16384, 4));
+            BinaryPrimitives.WriteUInt32BigEndian(ubiImg.AsSpan(16384 + 16, 4), 64);
+            BinaryPrimitives.WriteUInt32BigEndian(ubiImg.AsSpan(16384 + 20, 4), 128);
+            "UBI!"u8.CopyTo(ubiImg.AsSpan(16384 + 64, 4));
+            BinaryPrimitives.WriteUInt32BigEndian(ubiImg.AsSpan(16384 + 64 + 8, 4), 0);  // vol_id = 0
+            BinaryPrimitives.WriteUInt32BigEndian(ubiImg.AsSpan(16384 + 64 + 12, 4), 0); // lnum = 0
+            BinaryPrimitives.WriteUInt32BigEndian(ubiImg.AsSpan(16384 + 64 + 20, 4), 16); // data_size = 16
+            "UBI_ROOTFS_DATA!"u8.CopyTo(ubiImg.AsSpan(16384 + 128, 16));
+
+            var ubiRes = extRegistry.ExtractPayload(ubiImg, "ubi", "UBI Eraseblock Header", Path.Combine(tempRoot, "ubi_out"));
+            Assert.True(ubiRes.Success);
+            Assert.Contains(ubiRes.ExtractedFiles, f => f.EndsWith("ubi_vol0_rootfs.bin") && File.ReadAllText(f) == "UBI_ROOTFS_DATA!");
+
+            // 5. Zstandard Raw_Block + RLE_Block Frame
+            // Magic (4B) + FHD (0x20 = Single_Segment_Flag, 1B FCS = 10) + Raw_Block (last=0, type=0, size=5 -> "ZSTD_") + RLE_Block (last=1, type=1, size=5, byte='!')
+            byte[] zstdFrame = new byte[]
+            {
+                0x28, 0xB5, 0x2F, 0xFD,
+                0x20, 10,
+                (byte)((5 << 3) | (0 << 1) | 0), 0x00, 0x00,
+                (byte)'Z', (byte)'S', (byte)'T', (byte)'D', (byte)'_',
+                (byte)((5 << 3) | (1 << 1) | 1), 0x00, 0x00,
+                (byte)'!'
+            };
+            var zstdRes = extRegistry.ExtractPayload(zstdFrame, "zstd", "Zstandard (Zstd) Stream", Path.Combine(tempRoot, "zstd_out"));
+            Assert.True(zstdRes.Success);
+            Assert.Equal("ZSTD_!!!!!", File.ReadAllText(zstdRes.ExtractedFiles[0]));
+
+            // 6. XZ Container with Uncompressed LZMA2 Chunk
+            byte[] xzFrame = new byte[]
+            {
+                0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00, // Magic
+                0x00, 0x00,                         // Flags (CheckType = 0 None)
+                0x00, 0x00, 0x00, 0x00,             // CRC32
+                0x01, 0x00, 0x21, 0x01, 0x00, 0x00, 0x00, 0x00, // 8-byte Block Header (size = (1+1)*4 = 8)
+                0x01, 0x00, 0x06,                   // LZMA2 uncompressed chunk of length 6+1 = 7 bytes
+                (byte)'X', (byte)'Z', (byte)'_', (byte)'T', (byte)'E', (byte)'S', (byte)'T',
+                0x00, 0x00,                         // End of LZMA2 + padding
+                0x00                                // Index indicator
+            };
+            var xzRes = extRegistry.ExtractPayload(xzFrame, "xz", "XZ Compressed Stream", Path.Combine(tempRoot, "xz_out"));
+            Assert.True(xzRes.Success);
+            Assert.Equal("XZ_TEST", File.ReadAllText(xzRes.ExtractedFiles[0]));
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+                Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void IdArcSignatures_And_CarvingExtractors_Detect_And_Unpack_Cab_Rar_Arj_Lzh_Arc_Szdd_And_MzSfxOverlay()
+    {
+        var sigRegistry = FirmwareToolService.DefaultRegistry;
+        var extRegistry = FirmwareToolService.DefaultExtractors;
+        string tempRoot = Path.Combine(Path.GetTempPath(), "HexCraft_IdArcTests_" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            // 1. Microsoft Cabinet (CAB — IDArc #79) with MSZIP ("CK" + Deflate) compressed file "driver.inf"
+            byte[] cabFileText = Encoding.UTF8.GetBytes("[Version]\nSignature=\"$Windows NT$\"\n");
+            byte[] mszipBlock;
+            using (var ms = new MemoryStream())
+            {
+                ms.Write("CK"u8);
+                using (var def = new System.IO.Compression.DeflateStream(ms, System.IO.Compression.CompressionLevel.Optimal, leaveOpen: true))
+                    def.Write(cabFileText);
+                mszipBlock = ms.ToArray();
+            }
+
+            // Layout: [0..36] CFHEADER, [36..44] CFFOLDER, [44..71] CFFILE (16B + "driver.inf\0" = 27B), [71..79+mszipBlock.Length] CFDATA
+            int cfDataStart = 44 + 27;
+            int totalCabLen = cfDataStart + 8 + mszipBlock.Length;
+            byte[] cabImg = new byte[totalCabLen];
+            "MSCF\0\0\0\0"u8.CopyTo(cabImg.AsSpan(0, 8));
+            BinaryPrimitives.WriteUInt32LittleEndian(cabImg.AsSpan(8, 4), (uint)totalCabLen); // cbCabinet
+            BinaryPrimitives.WriteUInt32LittleEndian(cabImg.AsSpan(16, 4), 44);               // coffFiles
+            cabImg[24] = 3; cabImg[25] = 1;                                                   // v1.3
+            BinaryPrimitives.WriteUInt16LittleEndian(cabImg.AsSpan(26, 2), 1);                // cFolders = 1
+            BinaryPrimitives.WriteUInt16LittleEndian(cabImg.AsSpan(28, 2), 1);                // cFiles = 1
+            // CFFOLDER @ +36: coffCabStart=cfDataStart, cCFData=1, typeCompress=1 (MSZIP)
+            BinaryPrimitives.WriteUInt32LittleEndian(cabImg.AsSpan(36, 4), (uint)cfDataStart);
+            BinaryPrimitives.WriteUInt16LittleEndian(cabImg.AsSpan(40, 2), 1);
+            BinaryPrimitives.WriteUInt16LittleEndian(cabImg.AsSpan(42, 2), 1);
+            // CFFILE @ +44: cbFile, uoffFolderStart=0, iFolder=0, name="driver.inf\0"
+            BinaryPrimitives.WriteUInt32LittleEndian(cabImg.AsSpan(44, 4), (uint)cabFileText.Length);
+            "driver.inf\0"u8.CopyTo(cabImg.AsSpan(60, 11));
+            // CFDATA @ cfDataStart: csum=0, cbData=mszipBlock.Length, cbUncomp=cabFileText.Length
+            BinaryPrimitives.WriteUInt16LittleEndian(cabImg.AsSpan(cfDataStart + 4, 2), (ushort)mszipBlock.Length);
+            BinaryPrimitives.WriteUInt16LittleEndian(cabImg.AsSpan(cfDataStart + 6, 2), (ushort)cabFileText.Length);
+            mszipBlock.AsSpan().CopyTo(cabImg.AsSpan(cfDataStart + 8));
+
+            var cabHits = sigRegistry.Scan(cabImg);
+            Assert.Contains(cabHits, h => h.SignatureType == "Microsoft Cabinet (CAB)" && h.EstimatedSize == totalCabLen);
+            var cabRes = extRegistry.ExtractPayload(cabImg, "cab", "Microsoft Cabinet (CAB)", Path.Combine(tempRoot, "cab_out"));
+            Assert.True(cabRes.Success);
+            Assert.Contains(cabRes.ExtractedFiles, f => f.EndsWith("driver.inf") && File.ReadAllText(f) == "[Version]\nSignature=\"$Windows NT$\"\n");
+
+            // 2. RAR v4.x Archive (IDArc #15) with Multi-Volume + AV-Protected flags and Stored file "readme.txt"
+            byte[] rarPayload = "IDArc RAR Stored File!"u8.ToArray();
+            // [0..7] Marker, [7..20] ARCHIVE_HEAD (type=0x73, flags=0x0021 Volume+AV, size=13), [20..62] FILE_HEAD (type=0x74, size=42, method=0x30, name="readme.txt"), [62..84] payload, [84..91] ENDARC (0x7B, size=7)
+            byte[] rarImg = new byte[91];
+            new byte[] { 0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00 }.AsSpan().CopyTo(rarImg.AsSpan(0, 7));
+            rarImg[7 + 2] = 0x73; // ARCHIVE_HEAD
+            BinaryPrimitives.WriteUInt16LittleEndian(rarImg.AsSpan(7 + 3, 2), 0x0021); // MHD_VOLUME | MHD_AV
+            BinaryPrimitives.WriteUInt16LittleEndian(rarImg.AsSpan(7 + 5, 2), 13);
+            rarImg[20 + 2] = 0x74; // FILE_HEAD
+            BinaryPrimitives.WriteUInt16LittleEndian(rarImg.AsSpan(20 + 3, 2), 0x8000);
+            BinaryPrimitives.WriteUInt16LittleEndian(rarImg.AsSpan(20 + 5, 2), 42); // 32 + 10 ("readme.txt")
+            BinaryPrimitives.WriteUInt32LittleEndian(rarImg.AsSpan(20 + 7, 4), (uint)rarPayload.Length);
+            BinaryPrimitives.WriteUInt32LittleEndian(rarImg.AsSpan(20 + 11, 4), (uint)rarPayload.Length);
+            rarImg[20 + 25] = 0x30; // Storing
+            BinaryPrimitives.WriteUInt16LittleEndian(rarImg.AsSpan(20 + 26, 2), 10); // nameSize = 10
+            "readme.txt"u8.CopyTo(rarImg.AsSpan(20 + 32, 10));
+            rarPayload.AsSpan().CopyTo(rarImg.AsSpan(62, rarPayload.Length));
+            rarImg[84 + 2] = 0x7B; // ENDARC_HEAD
+            BinaryPrimitives.WriteUInt16LittleEndian(rarImg.AsSpan(84 + 5, 2), 7);
+
+            var rarHits = sigRegistry.Scan(rarImg);
+            Assert.Contains(rarHits, h => h.SignatureType == "RAR Archive" && h.Description.Contains("multi-volume") && h.Description.Contains("AV-protected") && h.EstimatedSize == 91);
+            var rarRes = extRegistry.ExtractPayload(rarImg, "rar", "RAR Archive", Path.Combine(tempRoot, "rar_out"));
+            Assert.True(rarRes.Success);
+            Assert.Contains(rarRes.ExtractedFiles, f => f.EndsWith("readme.txt") && File.ReadAllText(f) == "IDArc RAR Stored File!");
+
+            // 3. SEA ARC Archive (IDArc #1 `ArcMethod`) with RLE90 (method=3) compressed file "BANNER.TXT"
+            // RLE90 stream: 'A', 0x90, 8 (repeats 'A' 8 times total) + 'B', 0x90, 4 (repeats 'B' 4 times total) -> "AAAAAAAABBBB" (12B)
+            byte[] arcRle = new byte[] { (byte)'A', 0x90, 8, (byte)'B', 0x90, 4 };
+            byte[] arcImg = new byte[29 + arcRle.Length + 2];
+            arcImg[0] = 0x1A;
+            arcImg[1] = 0x03; // Method 3 = RLE90
+            "BANNER.TXT\0"u8.CopyTo(arcImg.AsSpan(2, 11));
+            BinaryPrimitives.WriteUInt32LittleEndian(arcImg.AsSpan(15, 4), (uint)arcRle.Length);
+            BinaryPrimitives.WriteUInt32LittleEndian(arcImg.AsSpan(25, 4), 12); // origSize = 12
+            arcRle.AsSpan().CopyTo(arcImg.AsSpan(29));
+            arcImg[29 + arcRle.Length] = 0x1A;
+            arcImg[29 + arcRle.Length + 1] = 0x00; // EOF marker
+
+            var arcHits = sigRegistry.Scan(arcImg);
+            Assert.Contains(arcHits, h => h.SignatureType == "SEA ARC / PAK Archive" && h.EstimatedSize == arcImg.Length);
+            var arcRes = extRegistry.ExtractPayload(arcImg, "arc", "SEA ARC / PAK Archive", Path.Combine(tempRoot, "arc_out"));
+            Assert.True(arcRes.Success);
+            Assert.Contains(arcRes.ExtractedFiles, f => f.EndsWith("BANNER.TXT") && File.ReadAllText(f) == "AAAAAAAABBBB");
+
+            // 4. MS Compress SZDD (IDArc #84) LZSS stream
+            // Header (14B) + Control byte 0x0F (4 literals "SZDD" + 1 match from initial 0x20 space ring buffer of len 4 -> "SZDD    ")
+            byte[] szddImg = new byte[14 + 1 + 4 + 2];
+            new byte[] { 0x53, 0x5A, 0x44, 0x44, 0x88, 0xF0, 0x27, 0x33, (byte)'A', (byte)'e' }.AsSpan().CopyTo(szddImg.AsSpan(0, 10));
+            BinaryPrimitives.WriteUInt32LittleEndian(szddImg.AsSpan(10, 4), 8); // uncompSize = 8 ("SZDD    ")
+            szddImg[14] = 0x0F; // bits 0..3 = 1 (literal), bit 4 = 0 (match)
+            "SZDD"u8.CopyTo(szddImg.AsSpan(15, 4));
+            szddImg[19] = 0x00; // match offset 0 (contains 0x20 spaces)
+            szddImg[20] = 0x01; // match len = 1 + 3 = 4 spaces
+
+            var szddHits = sigRegistry.Scan(szddImg);
+            Assert.Contains(szddHits, h => h.SignatureType == "MS Compress (SZDD/KWAJ)");
+            var szddRes = extRegistry.ExtractPayload(szddImg, "mscompress", "MS Compress (SZDD/KWAJ)", Path.Combine(tempRoot, "szdd_out"));
+            Assert.True(szddRes.Success);
+            Assert.Equal("SZDD    ", File.ReadAllText(szddRes.ExtractedFiles[0]));
+
+            // 5. MZ Self-Extracting Archive (SFX Overlay — ported from idarc/exe.go)
+            // 512-byte MZ stub (lastPageSize = 512, pages = 1 -> stubSize = 512) + appended SEA ARC archive!
+            byte[] sfxImg = new byte[512 + arcImg.Length];
+            "MZ"u8.CopyTo(sfxImg.AsSpan(0, 2));
+            BinaryPrimitives.WriteUInt16LittleEndian(sfxImg.AsSpan(2, 2), 512); // lastPageSize
+            BinaryPrimitives.WriteUInt16LittleEndian(sfxImg.AsSpan(4, 2), 1);   // pages = 1
+            arcImg.AsSpan().CopyTo(sfxImg.AsSpan(512));
+
+            var sfxHits = sigRegistry.Scan(sfxImg);
+            Assert.Contains(sfxHits, h => h.SignatureType == "MZ Self-Extracting Archive (SFX)" && h.Description.Contains("SEA ARC / PAK Archive"));
+            var sfxRes = extRegistry.ExtractPayload(
+                sfxImg,
+                "sfx_overlay",
+                "MZ Self-Extracting Archive (SFX)",
+                Path.Combine(tempRoot, "sfx_out"),
+                recursiveScanner: sigRegistry,
+                maxRecursionDepth: 2);
+            Assert.True(sfxRes.Success);
+            // Verify both the carved SFX stub AND the recursively unpacked BANNER.TXT from the appended ARC overlay!
+            Assert.Contains(sfxRes.ExtractedFiles, f => f.EndsWith("sfx_exe_stub.exe"));
+            Assert.Contains(sfxRes.ExtractedFiles, f => f.EndsWith("BANNER.TXT") && File.ReadAllText(f) == "AAAAAAAABBBB");
         }
         finally
         {

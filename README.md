@@ -32,15 +32,16 @@
     - Calculates `CRC-32`, `MD5`, `SHA-1`, `SHA-256`, Shannon entropy, and a 32-block visual entropy sparkline.
   - **Strings Viewer**: Extracts printable ASCII/UTF-8 and UTF-16 (LE/BE) strings with live substring and Regular Expression filtering.
   - **Bookmarks & Annotations Manager**: Tag byte ranges with custom labels and colors.
-- **Extensible Internal Firmware Signature & Extraction Engine (`HexCraft.Tools`)**:
-  - **24 Built-in Structural Signature Parsers (`HexCraft.Tools.Signatures`)**: Modeled on Binwalk v3's `src/signatures/*.rs` with deep header validation, checksum verification, and exact byte-size calculation for **SquashFS**, **CramFS**, **Linux EXT2/3/4**, **ROMFS (`-rom1fs-`)**, **JFFS2**, **UBI / UBIFS**, **U-Boot `uImage`**, **Flattened Device Tree (`.dtb`)**, **Broadcom TRX (`HDR0`)**, **D-Link SEAMA & DLOB**, **CPIO (`newc`/`crc`)**, **POSIX `ustar` TAR**, **7-Zip**, **ZIP**, **GZip**, **XZ**, **LZMA**, **BZip2**, **Zstandard (`Zstd`)**, **PEM Certificates & Keys**, **OpenSSL `Salted__` Streams**, **ELF**, and **PNG**.
-  - **12 Built-in Native In-Memory Extractors (`HexCraft.Tools.Extractors`)**: Modeled on Binwalk v3's `src/extractors/*.rs` with path-traversal sandboxing and **Matryoshka recursive unpacking**:
-    - **CramFS Unpacker (`cramfs`)**: Full directory tree reconstruction and RFC 1950 `ZLibStream` page decompression (LE & BE).
-    - **Linux ROMFS Unpacker (`romfs`)**: Traverses 16-byte aligned node graphs to unpack embedded directories and files.
-    - **Flattened Device Tree Decompiler (`dtb`)**: Decompiles binary `.dtb` blobs directly into human-readable `/dts-v1/;` Device Tree Source (`.dts`).
-    - **U-Boot `uImage` Unpacker (`uimage`)**: Verifies Header & Data CRC32s, splits `IH_TYPE_MULTI` multi-file images, and decompresses inner `GZip` kernels.
-    - **Broadcom TRX & D-Link SEAMA Partition Splitters (`trx`, `seama`)**: Splits router firmware partitions and metadata manifests.
-    - **Archive & Stream Unpackers (`cpio`, `tar`, `gzip`, `zlib`, `zip`, `pem`)**: Native in-memory unpacking plus optional `unsquashfs` integration (natively or via **WSL2** on Windows 11).
+- **Extensible Internal Firmware & Archive Signature + Extraction Engine (`HexCraft.Tools`)**:
+  - **35 Built-in Structural Signature & Carving Parsers (`HexCraft.Tools.Signatures`)**: Modeled on [Binwalk v3](https://github.com/ReFirmLabs/binwalk) (`src/signatures/*.rs`) and [IDArc](https://github.com/sourcekris/idarc) with deep header validation, checksum verification, multi-volume / AV-protection detection, and exact byte-size calculation:
+    - **Embedded Filesystems**: **SquashFS**, **CramFS**, **Linux EXT2/3/4**, **ROMFS (`-rom1fs-`)**, **JFFS2**, **UBI / UBIFS**.
+    - **Bootloaders, Hardware & Router Containers**: **U-Boot `uImage`**, **Flattened Device Tree (`.dtb`)**, **Broadcom TRX (`HDR0`)**, **D-Link SEAMA & DLOB**.
+    - **Modern & Classic Archives (IDArc + Binwalk)**: **Microsoft Cabinet (`CAB`)**, **RAR (`v1.5–v5.0`)**, **ARJ / SARJ**, **LZH / LHA / LHark**, **SEA ARC / NoGate PAK / Hyper**, **ZOO**, **ACE**, **RPM**, **CPIO (`newc`/`crc`)**, **POSIX `ustar` TAR**, **7-Zip**, **ZIP**, and **MZ Self-Extracting Archive (`SFX`) Overlays**.
+    - **Compression Streams, Credentials & Executables**: **GZip**, **XZ / LZMA2**, **LZMA1**, **BZip2**, **Zstandard (`Zstd`)**, **MS Compress (`SZDD` / `KWAJ`)**, **LZOP (`\x89LZO`)**, **PEM Certificates & Keys**, **OpenSSL `Salted__` Streams**, **ELF**, and **PNG**.
+  - **36 Built-in Native In-Memory Extractors (`HexCraft.Tools.Extractors`)**: 100% native C# unpackers for all 35 signature types (+ raw `Zlib`) with path-traversal sandboxing and **Matryoshka recursive unpacking**:
+    - **Filesystem Unpackers**: Native pure-C# unpackers for **SquashFS v4.0**, **CramFS** (LE/BE + `ZLibStream`), **ROMFS**, **JFFS2** (`NONE`, `ZERO`, `RTIME`, `ZLIB`), **Linux EXT2/3/4** (direct blocks & `0xF30A` EXT4 extent trees), and **UBI** (Layout Volume Table + LEB reassembly).
+    - **Hardware & Router Unpackers**: Native **Flattened Device Tree (`.dtb` → `.dts`) Decompiler**, **U-Boot `uImage`** single/multi-part unpacker, and **Broadcom TRX / D-Link SEAMA / DLOB** partition splitters.
+    - **IDArc Archive & Compression Unpackers**: Native **Microsoft `CAB`** (`NONE` & `MSZIP` Deflate), **RAR / ARJ / LZH** unpackers, **SEA ARC / PAK** (`Stored` & `RLE90`), **MS Compress `SZDD`** (4KB ring-buffer LZSS decompressor), **RPM** payload carver, **MZ SFX Overlay** splitter, plus pure-C# **BZip2**, **LZMA1**, **XZ / LZMA2**, **Zstandard**, **GZip**, **Zlib**, **CPIO**, **TAR**, and **ZIP** unpackers.
 
 ---
 

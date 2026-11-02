@@ -73,6 +73,10 @@ public sealed class FirmwareSignatureRegistry
         {
             registry.Register(parser);
         }
+        foreach (var parser in IdArcSignatureParsers.CreateAll())
+        {
+            registry.Register(parser);
+        }
         return registry;
     }
 
