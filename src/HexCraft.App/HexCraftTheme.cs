@@ -126,3 +126,4 @@ public sealed class HexCraftThemePalette
 
     public static IBrush Brush(string hex) => new SolidColorBrush(Color.Parse(hex));
 }
+

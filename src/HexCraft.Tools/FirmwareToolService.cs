@@ -1,5 +1,4 @@
 using System;
-using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -11,6 +10,8 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using HexCraft.Core.Buffers;
+using HexCraft.Tools.Extractors;
+using HexCraft.Tools.Signatures;
 
 namespace HexCraft.Tools;
 
@@ -24,31 +25,29 @@ public sealed record FirmwareSignatureEntry(
     string SourceEngine)
 {
     public string OffsetHex => $"0x{Offset:X8}";
-    public string SizeText => EstimatedSize > 0 ? $"{EstimatedSize:N0} B (0x{EstimatedSize:X})" : "Variable";
+    public string SizeText => EstimatedSize > 0 ? $"{EstimatedSize:N0} B (0x{EstimatedSize:X})" : "Stream";
 }
 
 public sealed record ToolDiscoveryStatus(
     bool IsLinux,
-    bool HasNativeBinwalk,
-    string? NativeBinwalkPath,
+    int RegisteredSignatureCount,
+    int RegisteredExtractorCount,
     bool HasNativeUnsquashfs,
     string? NativeUnsquashfsPath,
-    bool HasWsl2,
-    bool HasWslBinwalk,
-    bool HasWslUnsquashfs)
+    bool HasWsl2)
 {
     public string Summary
     {
         get
         {
-            var parts = new List<string> { "Built-in Firmware Scanner: Ready" };
-            if (HasNativeBinwalk) parts.Add("Binwalk: Native");
-            else if (HasWslBinwalk) parts.Add("Binwalk: WSL2");
-            else parts.Add("Binwalk: Using Built-in Engine");
+            var parts = new List<string>
+            {
+                $"HexCraft Engine: {RegisteredSignatureCount} Signatures | {RegisteredExtractorCount} Extractors"
+            };
 
             if (HasNativeUnsquashfs) parts.Add("unsquashfs: Native");
-            else if (HasWslUnsquashfs) parts.Add("unsquashfs: WSL2");
-            else parts.Add("unsquashfs: Carve Ready");
+            else if (HasWsl2) parts.Add("unsquashfs: WSL2 Bridge");
+            else parts.Add("Matryoshka Unpack: Active");
 
             return string.Join(" | ", parts);
         }
@@ -62,217 +61,47 @@ public sealed record ExtractionOutcome(
     string LogOutput);
 
 /// <summary>
-/// Integrates Binwalk and unsquashfs on Windows 11 (native or WSL2) and Linux,
-/// combined with a built-in zero-dependency firmware signature scanner and carver.
+/// HexCraft's internal extensible Firmware Signature &amp; Extraction Engine.
+/// Uses <see cref="FirmwareSignatureRegistry"/> (modeled on ReFirmLabs/binwalk <c>src/signatures/*.rs</c>)
+/// and <see cref="FirmwareExtractorRegistry"/> (modeled on ReFirmLabs/binwalk <c>src/extractors/*.rs</c>)
+/// for 100% self-contained signature detection, structural unpacking, and Matryoshka recursive extraction.
 /// </summary>
 public static class FirmwareToolService
 {
-    private sealed record MagicPattern(
-        byte[] Magic,
-        string SignatureType,
-        string Category,
-        bool CanUnsquashfs,
-        Func<ReadOnlySpan<byte>, (string Description, long EstimatedSize)> Inspector);
-
-    private static readonly List<MagicPattern> Signatures = new()
-    {
-        new(new byte[] { 0x68, 0x73, 0x71, 0x73 }, "SquashFS (LE)", "Filesystem", true, span =>
-        {
-            if (span.Length >= 48)
-            {
-                uint inodes = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(4, 4));
-                uint blockSize = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(12, 4));
-                ushort comp = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(20, 2));
-                ushort major = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(28, 2));
-                ushort minor = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(30, 2));
-                ulong bytesUsed = BinaryPrimitives.ReadUInt64LittleEndian(span.Slice(40, 8));
-                string compName = comp switch { 1 => "zlib", 2 => "lzma", 3 => "lzo", 4 => "xz", 5 => "lz4", 6 => "zstd", _ => $"id:{comp}" };
-                return ($"Squashfs filesystem, little endian, version {major}.{minor}, compression: {compName}, size: {bytesUsed} bytes, {inodes} inodes, blocksize: {blockSize} bytes", (long)bytesUsed);
-            }
-            return ("Squashfs filesystem, little endian", 0);
-        }),
-
-        new(new byte[] { 0x73, 0x71, 0x73, 0x68 }, "SquashFS (BE)", "Filesystem", true, _ =>
-            ("Squashfs filesystem, big endian", 0)),
-
-        new(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }, "PNG Image", "Image", false, span =>
-        {
-            if (span.Length >= 24)
-            {
-                uint w = BinaryPrimitives.ReadUInt32BigEndian(span.Slice(16, 4));
-                uint h = BinaryPrimitives.ReadUInt32BigEndian(span.Slice(20, 4));
-                return ($"PNG image, {w} x {h}, 8-bit/color RGBA", 0);
-            }
-            return ("PNG image data", 0);
-        }),
-
-        new(new byte[] { 0x1F, 0x8B, 0x08 }, "GZip Stream", "Compressed", false, span =>
-        {
-            if (span.Length >= 10)
-            {
-                byte flags = span[3];
-                string extra = "";
-                if ((flags & 0x08) != 0 && span.Length > 11)
-                {
-                    int nul = span[10..].IndexOf((byte)0);
-                    if (nul > 0)
-                        extra = $", original file name: \"{Encoding.ASCII.GetString(span.Slice(10, Math.Min(nul, 64)))}\"";
-                }
-                return ($"gzip compressed data, DEFLATE{extra}", 0);
-            }
-            return ("gzip compressed data", 0);
-        }),
-
-        new(new byte[] { 0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00 }, "XZ Stream", "Compressed", false, _ =>
-            ("XZ compressed data (LZMA2)", 0)),
-
-        new(new byte[] { 0x5D, 0x00, 0x00, 0x80, 0x00 }, "LZMA Stream", "Compressed", false, _ =>
-            ("LZMA compressed data, properties: 0x5D, dictionary size: 8388608 bytes", 0)),
-
-        new(new byte[] { 0x27, 0x05, 0x19, 0x56 }, "U-Boot uImage", "Firmware Header", false, span =>
-        {
-            if (span.Length >= 64)
-            {
-                uint size = BinaryPrimitives.ReadUInt32BigEndian(span.Slice(12, 4));
-                string name = Encoding.ASCII.GetString(span.Slice(32, 32)).TrimEnd('\0');
-                return ($"uImage header, header size: 64 bytes, data size: {size} bytes, name: \"{name}\"", size + 64);
-            }
-            return ("uImage firmware header", 64);
-        }),
-
-        new(new byte[] { 0xD0, 0x0D, 0xFE, 0xED }, "Flattened Device Tree (DTB)", "Hardware Tree", false, span =>
-        {
-            if (span.Length >= 8)
-            {
-                uint totalSize = BinaryPrimitives.ReadUInt32BigEndian(span.Slice(4, 4));
-                if (totalSize is >= 40 and <= 16 * 1024 * 1024)
-                    return ($"Flattened device tree, total size: {totalSize} bytes", totalSize);
-            }
-            return ("Flattened device tree blob (FDT/DTB)", 0);
-        }),
-
-        new(new byte[] { 0x50, 0x4B, 0x03, 0x04 }, "ZIP Local Header", "Archive", false, span =>
-        {
-            if (span.Length >= 30)
-            {
-                uint compSize = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(18, 4));
-                ushort nameLen = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(26, 2));
-                ushort extraLen = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(28, 2));
-                string fileName = "";
-                if (nameLen > 0 && span.Length >= 30 + nameLen)
-                    fileName = Encoding.UTF8.GetString(span.Slice(30, nameLen));
-                return ($"Zip archive data, name: \"{fileName}\", compressed size: {compSize}", 30 + nameLen + extraLen + compSize);
-            }
-            return ("Zip archive data", 0);
-        }),
-
-        new(new byte[] { 0x7F, 0x45, 0x4C, 0x46 }, "ELF Binary", "Executable", false, span =>
-        {
-            string bits = span.Length > 4 && span[4] == 2 ? "64-bit" : "32-bit";
-            return ($"ELF {bits} executable/shared object", 0);
-        }),
-
-        new(new byte[] { 0x45, 0x3D, 0xCD, 0x28 }, "CramFS (LE)", "Filesystem", false, _ =>
-            ("Linux Compressed ROM File System (cramfs), little endian", 0))
-    };
+    public static FirmwareSignatureRegistry DefaultRegistry { get; } = FirmwareSignatureRegistry.CreateDefault();
+    public static FirmwareExtractorRegistry DefaultExtractors { get; } = FirmwareExtractorRegistry.CreateDefault();
 
     public static ToolDiscoveryStatus DetectInstalledTools()
     {
         bool isLinux = RuntimeInformation.IsOSPlatform(OSPlatform.Linux);
-        string? nativeBinwalk = FindExecutableInPath(isLinux ? "binwalk" : "binwalk.exe");
         string? nativeUnsquashfs = FindExecutableInPath(isLinux ? "unsquashfs" : "unsquashfs.exe");
-
-        bool hasWsl = false;
-        bool wslBinwalk = false;
-        bool wslUnsquashfs = false;
-
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-        {
-            string? wslExe = FindExecutableInPath("wsl.exe");
-            hasWsl = wslExe is not null;
-        }
+        bool hasWsl = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) && FindExecutableInPath("wsl.exe") is not null;
 
         return new ToolDiscoveryStatus(
             IsLinux: isLinux,
-            HasNativeBinwalk: nativeBinwalk is not null,
-            NativeBinwalkPath: nativeBinwalk,
+            RegisteredSignatureCount: DefaultRegistry.Parsers.Count,
+            RegisteredExtractorCount: DefaultExtractors.Extractors.Count,
             HasNativeUnsquashfs: nativeUnsquashfs is not null,
             NativeUnsquashfsPath: nativeUnsquashfs,
-            HasWsl2: hasWsl,
-            HasWslBinwalk: wslBinwalk,
-            HasWslUnsquashfs: wslUnsquashfs);
+            HasWsl2: hasWsl);
     }
 
     /// <summary>
-    /// Scans a <see cref="BinaryDocument"/> using the built-in memory-safe signature scanner,
-    /// and optionally merges external `binwalk` output if requested and available.
+    /// Scans a <see cref="BinaryDocument"/> using HexCraft's extensible internal signature library.
     /// </summary>
-    public static List<FirmwareSignatureEntry> ScanSignatures(BinaryDocument doc, bool tryExternalBinwalk = false)
+    public static List<FirmwareSignatureEntry> ScanSignatures(
+        BinaryDocument doc,
+        bool tryExternalBinwalk = false,
+        FirmwareSignatureRegistry? customRegistry = null)
     {
-        var results = new List<FirmwareSignatureEntry>();
-        long scanLen = Math.Min(doc.Length, 32L * 1024 * 1024);
-        if (scanLen <= 0)
-            return results;
-
-        byte[] data = doc.ReadBytes(0, (int)scanLen);
-        ReadOnlySpan<byte> span = data;
-
-        foreach (var sig in Signatures)
-        {
-            int pos = 0;
-            while (pos <= span.Length - sig.Magic.Length)
-            {
-                int idx = span[pos..].IndexOf(sig.Magic);
-                if (idx < 0) break;
-
-                int matchOffset = pos + idx;
-                ReadOnlySpan<byte> window = span.Slice(matchOffset, Math.Min(256, span.Length - matchOffset));
-                var (desc, estSize) = sig.Inspector(window);
-
-                if (!string.IsNullOrEmpty(desc))
-                {
-                    long clampedSize = estSize > 0
-                        ? Math.Min(estSize, doc.Length - matchOffset)
-                        : Math.Min(256, doc.Length - matchOffset);
-
-                    results.Add(new FirmwareSignatureEntry(
-                        Offset: matchOffset,
-                        EstimatedSize: clampedSize,
-                        SignatureType: sig.SignatureType,
-                        Category: sig.Category,
-                        Description: desc,
-                        CanUnsquashfs: sig.CanUnsquashfs,
-                        SourceEngine: "Built-in"));
-                }
-
-                pos = matchOffset + Math.Max(1, sig.Magic.Length);
-            }
-        }
-
-        if (tryExternalBinwalk && !string.IsNullOrEmpty(doc.FilePath) && File.Exists(doc.FilePath))
-        {
-            try
-            {
-                var extEntries = RunExternalBinwalkScan(doc.FilePath);
-                foreach (var ext in extEntries)
-                {
-                    if (!results.Any(r => Math.Abs(r.Offset - ext.Offset) < 4))
-                        results.Add(ext);
-                }
-            }
-            catch
-            {
-                // Ignore external process failures and keep built-in scan results
-            }
-        }
-
-        results.Sort((a, b) => a.Offset.CompareTo(b.Offset));
-        return results;
+        var registry = customRegistry ?? DefaultRegistry;
+        return registry.Scan(doc);
     }
 
     /// <summary>
-    /// Carves a region from the BinaryDocument and, if it is a SquashFS image, attempts to run
-    /// native or WSL2 `unsquashfs` (and also extracts embedded files via built-in carving).
+    /// Carves a region from the <see cref="BinaryDocument"/> and unpacks supported formats in-memory
+    /// via <see cref="FirmwareExtractorRegistry"/> (CramFS, ROMFS, DTB->DTS, uImage, TRX, SEAMA, CPIO,
+    /// TAR, GZip, Zlib, ZIP, PEM) with Matryoshka recursive extraction, or via <c>unsquashfs</c>.
     /// </summary>
     public static async Task<ExtractionOutcome> CarveAndExtractAsync(
         BinaryDocument doc,
@@ -288,16 +117,25 @@ public static class FirmwareToolService
 
         Directory.CreateDirectory(baseDir);
 
+        // If TAR was matched at the +257 "ustar" magic offset, rewind 257 bytes to the start of the 512-byte TAR block
+        long effectiveStart = entry.Offset;
+        if (entry.SignatureType.Contains("TAR", StringComparison.OrdinalIgnoreCase) && entry.Offset >= 257)
+        {
+            byte[] checkUstar = doc.ReadBytes(entry.Offset, 5);
+            if (checkUstar.AsSpan().SequenceEqual("ustar"u8))
+                effectiveStart = entry.Offset - 257;
+        }
+
         long carveLength = entry.EstimatedSize > 0
-            ? Math.Min(entry.EstimatedSize, doc.Length - entry.Offset)
-            : Math.Max(0, doc.Length - entry.Offset);
+            ? Math.Min(entry.EstimatedSize, doc.Length - effectiveStart)
+            : Math.Max(0, doc.Length - effectiveStart);
 
         string safeType = Regex.Replace(entry.SignatureType, @"[^a-zA-Z0-9_\-]", "_");
-        string carvedFilePath = Path.Combine(baseDir, $"carved_{entry.Offset:X8}_{safeType}.bin");
+        string carvedFilePath = Path.Combine(baseDir, $"carved_{effectiveStart:X8}_{safeType}.bin");
 
-        byte[] carvedBytes = doc.ReadBytes(entry.Offset, (int)Math.Min(carveLength, 64 * 1024 * 1024));
+        byte[] carvedBytes = doc.ReadBytes(effectiveStart, (int)Math.Min(carveLength, 64 * 1024 * 1024));
         await File.WriteAllBytesAsync(carvedFilePath, carvedBytes, ct);
-        log.AppendLine($"[+] Carved {carvedBytes.Length:N0} bytes from offset 0x{entry.Offset:X8} -> {carvedFilePath}");
+        log.AppendLine($"[+] Carved {carvedBytes.Length:N0} bytes from offset 0x{effectiveStart:X8} [{entry.SourceEngine}] -> {carvedFilePath}");
 
         if (entry.CanUnsquashfs)
         {
@@ -312,46 +150,26 @@ public static class FirmwareToolService
                     $"SquashFS Image Carved by HexCraft\nOffset: 0x{entry.Offset:X8}\nSize: {carvedBytes.Length} bytes\nDetails: {entry.Description}\n", ct);
             }
         }
-        else if (entry.SignatureType.Contains("GZip", StringComparison.OrdinalIgnoreCase))
+        else
         {
-            try
-            {
-                using var inMs = new MemoryStream(carvedBytes);
-                using var gz = new GZipStream(inMs, CompressionMode.Decompress);
-                using var outMs = new MemoryStream();
-                await gz.CopyToAsync(outMs, ct);
-                byte[] decompressed = outMs.ToArray();
-                string decompPath = Path.Combine(baseDir, $"decompressed_{entry.Offset:X8}_payload.bin");
-                await File.WriteAllBytesAsync(decompPath, decompressed, ct);
-                log.AppendLine($"[+] Built-in GZip Decompressor: Unpacked {decompressed.Length:N0} bytes -> {decompPath}");
-            }
-            catch (Exception ex)
-            {
-                log.AppendLine($"[!] GZip decompression note: {ex.Message}");
-            }
-        }
-        else if (entry.SignatureType.Contains("ZIP", StringComparison.OrdinalIgnoreCase))
-        {
-            try
-            {
-                // Read from offset to end of document so Central Directory is present for ZipArchive
-                byte[] fullZipSlice = doc.ReadBytes(entry.Offset, (int)Math.Min(doc.Length - entry.Offset, 64 * 1024 * 1024));
-                using var zipMs = new MemoryStream(fullZipSlice);
-                using var archive = new ZipArchive(zipMs, ZipArchiveMode.Read);
-                string zipOutDir = Path.Combine(baseDir, "zip-extracted");
-                Directory.CreateDirectory(zipOutDir);
-                foreach (var zipEntry in archive.Entries)
-                {
-                    if (string.IsNullOrEmpty(zipEntry.Name)) continue;
-                    string targetFile = Path.Combine(zipOutDir, zipEntry.Name);
-                    zipEntry.ExtractToFile(targetFile, overwrite: true);
-                    log.AppendLine($"[+] Built-in ZIP Unpacker: Extracted '{zipEntry.FullName}' ({zipEntry.Length:N0} B)");
-                }
-            }
-            catch (Exception ex)
-            {
-                log.AppendLine($"[!] ZIP extraction note: {ex.Message}");
-            }
+            // Extract using HexCraft's internal FirmwareExtractorRegistry (+ Matryoshka recursion)
+            string sigId = entry.SourceEngine.Contains(':')
+                ? entry.SourceEngine.Split(':')[^1]
+                : entry.SignatureType;
+
+            byte[] payloadForExtractor = entry.SignatureType.Contains("ZIP", StringComparison.OrdinalIgnoreCase)
+                ? doc.ReadBytes(effectiveStart, (int)Math.Min(doc.Length - effectiveStart, 64 * 1024 * 1024))
+                : carvedBytes;
+
+            var extractResult = DefaultExtractors.ExtractPayload(
+                payloadForExtractor,
+                sigId,
+                entry.SignatureType,
+                baseDir,
+                recursiveScanner: DefaultRegistry,
+                maxRecursionDepth: 2);
+
+            log.AppendLine(extractResult.LogMessage);
         }
 
         var files = Directory.GetFiles(baseDir, "*", SearchOption.AllDirectories)
@@ -376,6 +194,117 @@ public static class FirmwareToolService
         }
         return full.Replace('\\', '/');
     }
+
+    /// <summary>
+    /// Native in-memory unpacker for SVR4 ASCII CPIO archives ("070701" / "070702").
+    /// </summary>
+    public static int ExtractCpioNewcArchive(ReadOnlySpan<byte> archiveBytes, string outputDir, StringBuilder? log = null)
+    {
+        Directory.CreateDirectory(outputDir);
+        int extractedCount = 0;
+        int pos = 0;
+
+        while (pos + 110 <= archiveBytes.Length)
+        {
+            var hdr = archiveBytes.Slice(pos, 110);
+            if (!hdr[..6].SequenceEqual("070701"u8) && !hdr[..6].SequenceEqual("070702"u8))
+                break;
+
+            uint fileSize;
+            uint nameSize;
+            try
+            {
+                fileSize = Convert.ToUInt32(Encoding.ASCII.GetString(hdr.Slice(54, 8)), 16);
+                nameSize = Convert.ToUInt32(Encoding.ASCII.GetString(hdr.Slice(94, 8)), 16);
+            }
+            catch
+            {
+                break;
+            }
+
+            if (nameSize == 0 || nameSize > 1024 || pos + 110 + nameSize > archiveBytes.Length)
+                break;
+
+            string rawName = Encoding.UTF8.GetString(archiveBytes.Slice(pos + 110, (int)nameSize)).TrimEnd('\0');
+            if (rawName == "TRAILER!!!")
+                break;
+
+            // Header + filename is padded to a 4-byte boundary
+            int dataOffset = Align4(pos + 110 + (int)nameSize);
+            if (dataOffset + fileSize > archiveBytes.Length)
+                break;
+
+            string safeFileName = Path.GetFileName(rawName.Replace('\\', '/'));
+            if (!string.IsNullOrEmpty(safeFileName) && fileSize > 0)
+            {
+                string destPath = Path.Combine(outputDir, safeFileName);
+                File.WriteAllBytes(destPath, archiveBytes.Slice(dataOffset, (int)fileSize).ToArray());
+                log?.AppendLine($"[+] CPIO Entry: '{rawName}' ({fileSize:N0} B) -> {destPath}");
+                extractedCount++;
+            }
+
+            // File data is also padded to a 4-byte boundary
+            pos = Align4(dataOffset + (int)fileSize);
+        }
+
+        return extractedCount;
+    }
+
+    /// <summary>
+    /// Native in-memory unpacker for POSIX ustar TAR archives.
+    /// </summary>
+    public static int ExtractPosixTarArchive(ReadOnlySpan<byte> tarBytes, string outputDir, StringBuilder? log = null)
+    {
+        Directory.CreateDirectory(outputDir);
+        int extractedCount = 0;
+        int pos = 0;
+
+        while (pos + 512 <= tarBytes.Length)
+        {
+            var block = tarBytes.Slice(pos, 512);
+            if (block[0] == 0)
+                break;
+
+            if (!block.Slice(257, 5).SequenceEqual("ustar"u8))
+                break;
+
+            string name = Encoding.UTF8.GetString(block[..100]).TrimEnd('\0').Trim();
+            string sizeOctal = Encoding.ASCII.GetString(block.Slice(124, 12)).TrimEnd('\0').Trim();
+            byte typeFlag = block[156];
+
+            long fileSize = 0;
+            try
+            {
+                if (!string.IsNullOrEmpty(sizeOctal))
+                    fileSize = Convert.ToInt64(sizeOctal, 8);
+            }
+            catch
+            {
+                break;
+            }
+
+            int dataStart = pos + 512;
+            if (dataStart + fileSize > tarBytes.Length)
+                break;
+
+            bool isRegularFile = typeFlag == 0 || typeFlag == (byte)'0';
+            string safeName = Path.GetFileName(name.Replace('\\', '/'));
+            if (isRegularFile && !string.IsNullOrEmpty(safeName) && fileSize >= 0)
+            {
+                string destPath = Path.Combine(outputDir, safeName);
+                File.WriteAllBytes(destPath, tarBytes.Slice(dataStart, (int)fileSize).ToArray());
+                log?.AppendLine($"[+] TAR Entry: '{name}' ({fileSize:N0} B) -> {destPath}");
+                extractedCount++;
+            }
+
+            long blocks = (fileSize + 511) / 512;
+            pos = dataStart + (int)(blocks * 512);
+        }
+
+        return extractedCount;
+    }
+
+    private static int Align4(int value) => (value + 3) & ~3;
 
     private static async Task<bool> TryRunUnsquashfsAsync(
         string carvedFilePath,
@@ -439,56 +368,6 @@ public static class FirmwareToolService
         }
     }
 
-    private static List<FirmwareSignatureEntry> RunExternalBinwalkScan(string filePath)
-    {
-        var list = new List<FirmwareSignatureEntry>();
-        bool isLinux = RuntimeInformation.IsOSPlatform(OSPlatform.Linux);
-        string? binwalkExe = FindExecutableInPath(isLinux ? "binwalk" : "binwalk.exe");
-
-        ProcessStartInfo? psi = null;
-        if (binwalkExe is not null)
-        {
-            psi = new ProcessStartInfo
-            {
-                FileName = binwalkExe,
-                Arguments = $"\"{filePath}\"",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-        }
-
-        if (psi is null) return list;
-
-        using var proc = Process.Start(psi);
-        if (proc is null) return list;
-
-        string output = proc.StandardOutput.ReadToEnd();
-        proc.WaitForExit(5000);
-
-        // Parse standard binwalk table lines: "DECIMAL       HEXADECIMAL     DESCRIPTION"
-        foreach (string line in output.Split('\n'))
-        {
-            var match = Regex.Match(line.Trim(), @"^(\d+)\s+0x[0-9A-Fa-f]+\s+(.+)$");
-            if (match.Success && long.TryParse(match.Groups[1].Value, out long offset))
-            {
-                string desc = match.Groups[2].Value.Trim();
-                bool isSquash = desc.Contains("Squashfs", StringComparison.OrdinalIgnoreCase);
-                list.Add(new FirmwareSignatureEntry(
-                    Offset: offset,
-                    EstimatedSize: 0,
-                    SignatureType: isSquash ? "SquashFS" : "Binwalk Match",
-                    Category: "Firmware",
-                    Description: desc,
-                    CanUnsquashfs: isSquash,
-                    SourceEngine: "Binwalk CLI"));
-            }
-        }
-
-        return list;
-    }
-
     private static string? FindExecutableInPath(string exeName)
     {
         string? pathEnv = Environment.GetEnvironmentVariable("PATH");
@@ -511,4 +390,3 @@ public static class FirmwareToolService
         return null;
     }
 }
-

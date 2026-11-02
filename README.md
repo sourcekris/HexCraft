@@ -32,9 +32,15 @@
     - Calculates `CRC-32`, `MD5`, `SHA-1`, `SHA-256`, Shannon entropy, and a 32-block visual entropy sparkline.
   - **Strings Viewer**: Extracts printable ASCII/UTF-8 and UTF-16 (LE/BE) strings with live substring and Regular Expression filtering.
   - **Bookmarks & Annotations Manager**: Tag byte ranges with custom labels and colors.
-- **Binwalk & `unsquashfs` Firmware Integration (`HexCraft.Tools`)**:
-  - Built-in zero-dependency firmware signature scanner (SquashFS, CramFS, U-Boot `uImage`, DTB, GZip, XZ, LZMA, ZIP, PNG, ELF) plus seamless integration with external `binwalk` and `unsquashfs` (natively on Linux/Windows or automatically bridged via **WSL2** on Windows 11).
-  - Built-in automatic decompression/unpacking for carved **GZip** streams and **ZIP** archives, with double-click loading of extracted files into new HexCraft tabs.
+- **Extensible Internal Firmware Signature & Extraction Engine (`HexCraft.Tools`)**:
+  - **24 Built-in Structural Signature Parsers (`HexCraft.Tools.Signatures`)**: Modeled on Binwalk v3's `src/signatures/*.rs` with deep header validation, checksum verification, and exact byte-size calculation for **SquashFS**, **CramFS**, **Linux EXT2/3/4**, **ROMFS (`-rom1fs-`)**, **JFFS2**, **UBI / UBIFS**, **U-Boot `uImage`**, **Flattened Device Tree (`.dtb`)**, **Broadcom TRX (`HDR0`)**, **D-Link SEAMA & DLOB**, **CPIO (`newc`/`crc`)**, **POSIX `ustar` TAR**, **7-Zip**, **ZIP**, **GZip**, **XZ**, **LZMA**, **BZip2**, **Zstandard (`Zstd`)**, **PEM Certificates & Keys**, **OpenSSL `Salted__` Streams**, **ELF**, and **PNG**.
+  - **12 Built-in Native In-Memory Extractors (`HexCraft.Tools.Extractors`)**: Modeled on Binwalk v3's `src/extractors/*.rs` with path-traversal sandboxing and **Matryoshka recursive unpacking**:
+    - **CramFS Unpacker (`cramfs`)**: Full directory tree reconstruction and RFC 1950 `ZLibStream` page decompression (LE & BE).
+    - **Linux ROMFS Unpacker (`romfs`)**: Traverses 16-byte aligned node graphs to unpack embedded directories and files.
+    - **Flattened Device Tree Decompiler (`dtb`)**: Decompiles binary `.dtb` blobs directly into human-readable `/dts-v1/;` Device Tree Source (`.dts`).
+    - **U-Boot `uImage` Unpacker (`uimage`)**: Verifies Header & Data CRC32s, splits `IH_TYPE_MULTI` multi-file images, and decompresses inner `GZip` kernels.
+    - **Broadcom TRX & D-Link SEAMA Partition Splitters (`trx`, `seama`)**: Splits router firmware partitions and metadata manifests.
+    - **Archive & Stream Unpackers (`cpio`, `tar`, `gzip`, `zlib`, `zip`, `pem`)**: Native in-memory unpacking plus optional `unsquashfs` integration (natively or via **WSL2** on Windows 11).
 
 ---
 

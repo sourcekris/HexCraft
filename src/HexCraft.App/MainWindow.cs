@@ -554,7 +554,7 @@ public sealed class MainWindow : Window
         Grid.SetRow(_stringsListBox, 1);
         stringsGrid.Children.Add(_stringsListBox);
 
-        // Tab 3: Binwalk & unsquashfs Integration
+        // Tab 3: HexCraft Internal Signature Engine & Unsquashfs Integration
         var binwalkGrid = new Grid
         {
             ColumnDefinitions = new ColumnDefinitions("1.3*,5,1*")
@@ -567,7 +567,7 @@ public sealed class MainWindow : Window
             Spacing = 6,
             Margin = new Thickness(4, 4)
         };
-        bwToolbar.Children.Add(CreateActionButton("Run Signature Scan (Binwalk)", "blue", (_, _) => RefreshBinwalkScan(tryExternal: true)));
+        bwToolbar.Children.Add(CreateActionButton("Run Signature Scan", "blue", (_, _) => RefreshBinwalkScan(tryExternal: false)));
         bwToolbar.Children.Add(CreateActionButton("Carve / Unpack Selected (unsquashfs / GZip / ZIP)", "green", OnCarveOrUnsquashClicked));
         bwToolbar.Children.Add(CreateActionButton("Open Extracted File in New Tab", "purple", OnOpenExtractedFileClicked));
 
@@ -628,7 +628,7 @@ public sealed class MainWindow : Window
             },
             new TabItem
             {
-                Header = "Binwalk & unsquashfs Analyzer",
+                Header = $"Firmware Signatures ({FirmwareToolService.DefaultRegistry.Parsers.Count} Parsers) & Unpack",
                 Content = binwalkGrid
             },
             new TabItem
@@ -1186,7 +1186,7 @@ public sealed class MainWindow : Window
         {
             var item = new ListBoxItem
             {
-                Content = $"{sig.OffsetHex}  [{sig.SignatureType,-16}]  ({sig.SizeText})  —  {sig.Description}",
+                Content = $"{sig.OffsetHex}  [{sig.SignatureType,-26}]  ({sig.SizeText})  —  {sig.Description}",
                 Tag = sig,
                 FontFamily = new FontFamily("Cascadia Mono, Consolas, monospace"),
                 FontSize = 12
@@ -1194,7 +1194,8 @@ public sealed class MainWindow : Window
             _binwalkListBox.Items.Add(item);
         }
 
-        _toolLogBox.Text = $"[Binwalk Signature Scanner] Found {_firmwareSignatures.Count} embedded signatures. Select any entry and click 'Carve / Unpack Selected'.";
+        string parserNames = string.Join(", ", FirmwareToolService.DefaultRegistry.Parsers.Select(p => p.Name));
+        _toolLogBox.Text = $"[HexCraft Internal Signature Engine ({FirmwareToolService.DefaultRegistry.Parsers.Count} Parsers: {parserNames})] Found {_firmwareSignatures.Count} validated embedded signatures.";
     }
 
     private void RefreshBookmarksPane()
